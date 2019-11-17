@@ -1,8 +1,11 @@
 from collections import defaultdict
 from functools import partial as partial_, wraps
-from inspect import Parameter, signature
+from inspect import iscoroutinefunction, Parameter, signature
+from logging import Logger
+from typing import Callable, Union
 
-__all__ = ("bind", "cancellable", "keydefaultdict")
+
+__all__ = ("bind", "cancellable", "keydefaultdict", "protected")
 
 
 def bind(func, args=None, kwds=None, *, partial=False):
@@ -64,3 +67,54 @@ class keydefaultdict(defaultdict):
         else:
             ret = self[key] = self.default_factory(key)
             return ret
+
+
+def protected(handler: Union[Logger, Callable]):
+    """Decorator factory that creates a decorator that decorates a function and
+    ensures that the exceptions do not propagate out from the function.
+
+    When an exception is raised within the body of the function, it is forwarded
+    to the given handler function. The handler may also be a logger, in which
+    case the logger will be used to log the exception.
+
+    Parameters:
+        handler: the handler function to call when an exception happens in the
+            decorated function, or a logger to log the exception to
+    """
+
+    if isinstance(handler, Logger):
+        log = handler
+
+        def log_exception(_):
+            log.exception("Unexpected exception caught")
+
+        handler = log_exception
+
+    def decorator(func):
+        if iscoroutinefunction(func):
+
+            @wraps(func)
+            async def decorated(*args, **kwds):
+                try:
+                    return await func(*args, **kwds)
+                except Exception as ex:
+                    if iscoroutinefunction(handler):
+                        await handler(ex)
+                    else:
+                        handler(ex)
+
+        else:
+
+            if iscoroutinefunction(handler):
+                raise ValueError("cannot use async handler with sync function")
+
+            @wraps(func)
+            def decorated(*args, **kwds):
+                try:
+                    return func(*args, **kwds)
+                except Exception as ex:
+                    handler(ex)
+
+        return decorated
+
+    return decorator

@@ -15,7 +15,7 @@ from typing import Any, Dict, Generator, Generic, List, Optional, Set, Type, Typ
 from flockwave.logger import add_id_to_log, log as base_log, Logger
 
 from .base import Configuration, ExtensionBase
-from .utils import bind, cancellable, keydefaultdict
+from .utils import bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
 
@@ -52,19 +52,18 @@ class LoadOrder(Generic[T]):
         """Notifies the object that the given extension was loaded."""
         item = self._dict.get(name)
         if not item:
-            item = LoadOrder.Node(name)
+            item = self._dict[name] = LoadOrder.Node(name)
         else:
             self._unlink_item(item)
+
         item.prev = self._tail
         item.next = self._guard
+
         self._tail.next = item
         self._tail = item
 
     def notify_unloaded(self, name: T) -> None:
         """Notifies the object that the given extension was unloaded."""
-        if name not in self._dict:
-            return
-
         item = self._dict.pop(name, None)
         if item:
             return self._unlink_item(item)
@@ -79,6 +78,9 @@ class LoadOrder(Generic[T]):
             item = item.prev
 
     def _unlink_item(self, item: Node) -> None:
+        if self._tail is item:
+            self._tail = item.prev
+
         item.prev.next = item.next
         item.next.prev = item.prev
 
@@ -477,7 +479,7 @@ class ExtensionManager:
                 func(self.app)
             except Exception:
                 clean_unload = False
-                log.exception("Error while unloading extension; " "forcing unload")
+                log.exception("Error while unloading extension; forcing unload")
 
         # Update the internal bookkeeping object
         extension_data.loaded = False
@@ -591,8 +593,9 @@ class ExtensionManager:
 
         task = getattr(extension, "run", None)
         if iscoroutinefunction(task):
+            task = bind(task, args, partial=True)
             extension_data.task = await self._run_in_background(
-                cancellable(bind(task, args, partial=True)),
+                self._protect_extension_task(cancellable(task), extension_name),
                 name=f"extension:{extension_name}/run",
             )
         elif task is not None:
@@ -611,6 +614,30 @@ class ExtensionManager:
             await self._spinup_extension(extension)
 
         return result
+
+    async def _on_extension_task_crashed(self, extension_name: str) -> None:
+        """Handles an exception that originated from the extension with the
+        given name.
+        """
+        base_log.exception(
+            "Unexpected exception caught from extension {0!r}".format(extension_name)
+        )
+
+        # TODO(ntamas): unload all the dependencies of the extension as well
+        await self.unload(extension_name)
+
+    def _protect_extension_task(self, func, extension_name):
+        """Given a main asynchronous task corresponding to an extension,
+        returns another async task that handles exceptions coming from the
+        task gracefully, without crashing the extension manager.
+        """
+
+        # Don't use partial() here -- it's hard to detect whether a partial
+        # function is async or not
+        async def handler(exc):
+            await self._on_extension_task_crashed(extension_name)
+
+        return protected(handler)(func)
 
     async def _spindown_all_extensions(self) -> None:
         """Iterates over all loaded extensions and spins down each one of
