@@ -6,8 +6,8 @@ from setuptools import setup, find_packages
 
 requires = [
     "blinker>=1.4",
-    "flockwave-logger @ https://git.collmot.com/collmot/flockwave-logger/archive/1.0.0.tar.gz",
-    "trio>=0.12.1"
+    "flockwave-logger @ https://git.collmot.com/collmot/flockwave-logger/archive/1.1.0.tar.gz",
+    "trio>=0.13.0"
 ]
 
 __version__ = None

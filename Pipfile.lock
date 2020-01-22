@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "b52480fce2fcd3b2125286e05ccbc1835b21b41a3856d7d7dee3885a4d871126"
+            "sha256": "73e57f150a8748ca3a2e8164500b131af6f3c3565970e4df67fcb7c38e39c1ce"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -38,7 +38,7 @@
             "version": "==1.4"
         },
         "flockwave-logger": {
-            "file": "https://git.collmot.com/collmot/flockwave-logger/archive/1.0.0.tar.gz"
+            "file": "https://git.collmot.com/collmot/flockwave-logger/archive/1.1.0.tar.gz"
         },
         "idna": {
             "hashes": [
@@ -70,11 +70,11 @@
         },
         "trio": {
             "hashes": [
-                "sha256:149a280a4c66ef08d058626e3f48bf979e6e079777d1fc5cae71676586ced672",
-                "sha256:d2c7dfd60e4b2a87a8ba6e106e5c5bd743df729cff444e532a76c410b22d6658"
+                "sha256:a6d83c0cb4a177ec0f5179ce88e27914d5c8e6fd01c4285176b949e6ddc88c6c",
+                "sha256:f1cf00054ad974c86d9b7afa187a65d79fd5995340abe01e8e4784d86f4acb30"
             ],
             "index": "pypi",
-            "version": "==0.12.1"
+            "version": "==0.13.0"
         }
     },
     "develop": {}

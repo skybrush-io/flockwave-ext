@@ -443,62 +443,7 @@ class ExtensionManager:
         Parameters:
             extension_name: the name of the extension to unload
         """
-        log = add_id_to_log(base_log, id=extension_name)
-
-        # Get the extension instance
-        try:
-            extension = self._get_loaded_extension_by_name(extension_name)
-        except KeyError:
-            log.warning("Tried to unload extension but it is not loaded")
-            return
-
-        # Get the associated internal bookkeeping object of the extension
-        extension_data = self._extensions[extension_name]
-        if extension_data.dependents:
-            message = "Failed to unload extension {0!r} because it is still in use".format(
-                extension_name
-            )
-            raise RuntimeError(message)
-
-        # Spin down the extension if needed
-        if self._spinning:
-            await self._spindown_extension(extension_name)
-
-        # Stop the task associated to the extension if it has one
-        if extension_data.task:
-            # TODO(ntamas): wait until the task is cancelled
-            extension_data.task.cancel()
-            extension_data.task = None
-
-        # Unload the extension
-        clean_unload = True
-
-        func = getattr(extension, "unload", None)
-        if callable(func):
-            try:
-                func(self.app)
-            except Exception:
-                clean_unload = False
-                log.exception("Error while unloading extension; forcing unload")
-
-        # Update the internal bookkeeping object
-        extension_data.loaded = False
-        extension_data.instance = None
-
-        # Remove the extension from its dependents
-        self._load_order.notify_unloaded(extension_name)
-
-        for dependency in self._get_dependencies_of_extension(extension_name):
-            self._extensions[dependency].dependents.remove(extension_name)
-
-        # Send a signal that the extension was unloaded
-        self.unloaded.send(self, name=extension_name, extension=extension)
-
-        # Add a log message
-        if clean_unload:
-            log.debug("Unloaded extension")
-        else:
-            log.warning("Unloaded extension")
+        return await self._unload(extension_name, forbidden=[])
 
     def _get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
         """Determines the list of extensions that a given extension depends
@@ -533,12 +478,30 @@ class ExtensionManager:
 
         return set(dependencies or [])
 
+    def _get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
+        """Determines the list of _loaded_ extensions that depend on a given
+        extension directly.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the names of the extensions that the given extension depends on
+        """
+        reverse_dependencies = set()
+
+        if self.is_loaded(extension_name):
+            for other_name in self._load_order.reversed():
+                if other_name == extension_name:
+                    break
+
+                if extension_name in self._get_dependencies_of_extension(other_name):
+                    reverse_dependencies.add(other_name)
+
+        return reverse_dependencies
+
     async def _load(self, extension_name: str, forbidden: List[str]):
-        if extension_name in forbidden:
-            cycle = forbidden + [extension_name]
-            base_log.error(
-                "Dependency cycle detected: {0}".format(" -> ".join(map(str, cycle)))
-            )
+        if not self._ensure_no_cycle(forbidden, extension_name):
             return
 
         await self._ensure_dependencies_loaded(extension_name, forbidden)
@@ -623,7 +586,6 @@ class ExtensionManager:
             "Unexpected exception caught from extension {0!r}".format(extension_name)
         )
 
-        # TODO(ntamas): unload all the dependencies of the extension as well
         await self.unload(extension_name)
 
     def _protect_extension_task(self, func, extension_name):
@@ -714,6 +676,72 @@ class ExtensionManager:
                 name=f"extension:{extension_name}/worker",
             )
 
+    async def _unload(self, extension_name: str, forbidden: List[str]) -> None:
+        if not self._ensure_no_cycle(forbidden, extension_name):
+            return
+
+        await self._ensure_reverse_dependencies_unloaded(extension_name, forbidden)
+        if self.is_loaded(extension_name):
+            return await self._unload_single_extension(extension_name)
+
+    async def _unload_single_extension(self, extension_name: str) -> None:
+        log = add_id_to_log(base_log, id=extension_name)
+
+        # Get the extension instance
+        try:
+            extension = self._get_loaded_extension_by_name(extension_name)
+        except KeyError:
+            log.warning("Tried to unload extension but it is not loaded")
+            return
+
+        # Get the associated internal bookkeeping object of the extension
+        extension_data = self._extensions[extension_name]
+        if extension_data.dependents:
+            message = "Failed to unload extension {0!r} because it is still in use".format(
+                extension_name
+            )
+            raise RuntimeError(message)
+
+        # Spin down the extension if needed
+        if self._spinning:
+            await self._spindown_extension(extension_name)
+
+        # Stop the task associated to the extension if it has one
+        if extension_data.task:
+            # TODO(ntamas): wait until the task is cancelled
+            extension_data.task.cancel()
+            extension_data.task = None
+
+        # Unload the extension
+        clean_unload = True
+
+        func = getattr(extension, "unload", None)
+        if callable(func):
+            try:
+                func(self.app)
+            except Exception:
+                clean_unload = False
+                log.exception("Error while unloading extension; forcing unload")
+
+        # Update the internal bookkeeping object
+        extension_data.loaded = False
+        extension_data.instance = None
+
+        # Remove the extension from its dependents
+        self._load_order.notify_unloaded(extension_name)
+
+        for dependency in self._get_dependencies_of_extension(extension_name):
+            self._extensions[dependency].dependents.remove(extension_name)
+
+        # Send a signal that the extension was unloaded
+        self.unloaded.send(self, name=extension_name, extension=extension)
+
+        # Add a log message
+        if clean_unload:
+            log.debug("Unloaded extension")
+        else:
+            log.warning("Unloaded extension")
+
     async def _ensure_dependencies_loaded(
         self, extension_name: str, forbidden: List[str]
     ):
@@ -735,6 +763,38 @@ class ExtensionManager:
         for dependency in dependencies:
             await self._load(dependency, forbidden)
         forbidden.pop()
+
+    async def _ensure_reverse_dependencies_unloaded(
+        self, extension_name: str, forbidden: List[str]
+    ):
+        """Ensures that all the dependencies of the given extension are
+        unloaded.
+
+        When a dependency of the given extension is not unloaded yet, it will
+        be unloaded automatically.
+
+        Parameters:
+            extension_name: the name of the extension
+            forbidden: set of extensions that are already being unloaded
+
+        Raises:
+            ImportError: if an extension cannot be imported
+        """
+        dependencies = self._get_reverse_dependencies_of_extension(extension_name)
+        forbidden.append(extension_name)
+        for dependency in dependencies:
+            await self._unload(dependency, forbidden)
+        forbidden.pop()
+
+    @staticmethod
+    def _ensure_no_cycle(forbidden: List[str], extension_name: str) -> bool:
+        if extension_name in forbidden:
+            cycle = forbidden + [extension_name]
+            base_log.error(
+                "Dependency cycle detected: {0}".format(" -> ".join(map(str, cycle)))
+            )
+            return False
+        return True
 
 
 class ExtensionAPIProxy:
