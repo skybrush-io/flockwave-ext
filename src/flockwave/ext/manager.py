@@ -5,6 +5,7 @@ from __future__ import absolute_import, annotations
 import importlib
 
 from blinker import Signal
+from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from inspect import iscoroutinefunction
@@ -199,7 +200,7 @@ class ExtensionManager:
 
         for extension_name, extension_cfg in configuration.items():
             ext = self._extensions[extension_name]
-            ext.configuration = dict(extension_cfg)
+            ext.configuration = deepcopy(extension_cfg)
             loaded_extensions.add(extension_name)
 
         for extension_name in sorted(loaded_extensions):
@@ -282,6 +283,22 @@ class ExtensionManager:
         """
         module_name = self._get_module_name_for_extension(extension_name)
         return get_loader(module_name) is not None
+
+    def get_configuration_snapshot(self, extension_name: str) -> Dict:
+        """Returns a snapshot of the configuration of the given extension.
+
+        The snapshot is a deep copy of the configuration object of the
+        extension; you may freely modify it without affecting the extension
+        even if it is loaded.
+
+        Parameters:
+            extension_name: the name of the extension whose configuration is
+                to be snapshotted
+
+        Returns:
+            a deep copy of the configuration object of the extension
+        """
+        return deepcopy(self._extensions[extension_name].configuration)
 
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.
@@ -574,7 +591,7 @@ class ExtensionManager:
         self.loaded.send(self, name=extension_name, extension=extension)
 
         if self._spinning:
-            await self._spinup_extension(extension)
+            await self._spinup_extension(extension_name)
 
         return result
 
