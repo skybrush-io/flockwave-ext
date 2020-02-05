@@ -25,6 +25,9 @@ base_log = base_log.getChild("manager")
 
 T = TypeVar("T")
 
+#: Type alias for the configuration objects of the extensions
+ExtensionConfiguration = Dict[str, Any]
+
 
 class LoadOrder(Generic[T]):
     """Helper object that maintains the order in which extensions were loaded
@@ -91,13 +94,15 @@ class ExtensionData(object):
     """Data that the extension manager stores related to each extension.
 
     Attributes:
-        name (str): the name of the extension
-        api_proxy (object): the API object that the extension exports
-        configuration (object): the configuration object of the extension
-        dependents (Set[str]): names of other loaded extensions that depend
-            on this extension
-        instance (object): the loaded instance of the extension
-        loaded (bool): whether the extension is loaded
+        name: the name of the extension
+        api_proxy: the API object that the extension exports
+        configuration: the current configuration object of the extension
+        dependents: names of other loaded extensions that depend on this
+            extension
+        instance: the loaded instance of the extension
+        loaded: whether the extension is loaded
+        next_configuration: the next configuration object of the extension that
+            will be activated when the extension is loaded the next time
         task (Optional[trio.CancelScope]): a cancellation scope for the
             background task that was spawned for the extension when it
             was loaded, or `None` if no such task was spawned
@@ -110,17 +115,56 @@ class ExtensionData(object):
     name: str
 
     api_proxy: Optional[object] = None
-    configuration: Dict[str, Any] = field(default_factory=dict)
+    configuration: ExtensionConfiguration = field(default_factory=dict)
     dependents: Set[str] = field(default_factory=set)
     instance: Optional[object] = None
     loaded: bool = False
     log: Logger = None
+    next_configuration: Optional[ExtensionConfiguration] = None
     task: Optional[CancelScope] = None
     worker: Optional[CancelScope] = None
 
     @classmethod
     def for_extension(cls, name):
         return cls(name=name, log=base_log.getChild(name))
+
+    def commit_configuration_changes(self) -> ExtensionConfiguration:
+        """Moves the "next configuration" of the extension into the
+        configuration field. This function should be called before an extension
+        is loaded and after the extension is unloaded to commit any changes that
+        the user has made to the configuration while it was loaded.
+
+        Returns:
+            the updated configuration of the extension
+        """
+        if self.next_configuration is not None:
+            self.configuration = self.next_configuration
+            self.next_configuration = None
+        return self.configuration
+
+    def configure(self, configuration: ExtensionConfiguration) -> None:
+        """Configures the extension with a new configuration object.
+
+        If the extension is not loaded, the new configuration takes effect
+        immediately.
+
+        If the extension is loaded, the new configuration is saved and will
+        take effect the next time the extension is reloaded.
+
+        In both cases, the configuration object passed here is deep-copied. You
+        are safe to make changes to the configuration object without affecting
+        the extension.
+        """
+        self.next_configuration = deepcopy(configuration)
+        if not self.loaded:
+            self.commit_configuration_changes()
+
+    @property
+    def needs_restart(self) -> bool:
+        """Returns whether the extension needs a restart to activate its next
+        configuration.
+        """
+        return self.next_configuration is not None
 
 
 class ExtensionManager:
@@ -177,8 +221,10 @@ class ExtensionManager:
         if self._spinning:
             await self._spinup_all_extensions()
 
-    async def _configure(self, configuration: Configuration, **kwds) -> None:
-        """Configures the extension manager.
+    async def _configure_and_load_extensions(
+        self, configuration: Configuration, **kwds
+    ) -> None:
+        """Configures the extension manager and loads all configured extensions.
 
         Extensions that were loaded earlier will be unloaded before loading
         the new ones with the given configuration.
@@ -199,8 +245,7 @@ class ExtensionManager:
         await self.teardown()
 
         for extension_name, extension_cfg in configuration.items():
-            ext = self._extensions[extension_name]
-            ext.configuration = deepcopy(extension_cfg)
+            self.configure(extension_name, extension_cfg)
             loaded_extensions.add(extension_name)
 
         for extension_name in sorted(loaded_extensions):
@@ -271,6 +316,16 @@ class ExtensionManager:
         """
         return "{0}.{1}".format(self._extension_package_root, extension_name)
 
+    def configure(self, extension_name: str, configuration: Dict) -> None:
+        """Configures the extension with the given name.
+
+        Changes to the configuration of an extension that is already loaded will
+        not take effect until the extension is reloaded. Attempts to retrieve a
+        configuration snapshot from the extension will still yield the old
+        configuration until the next reload.
+        """
+        self._extensions[extension_name].configure(configuration)
+
     def exists(self, extension_name: str) -> bool:
         """Returns whether the extension with the given name exists,
         irrespectively of whether it was loaded already or not.
@@ -298,7 +353,8 @@ class ExtensionManager:
         Returns:
             a deep copy of the configuration object of the extension
         """
-        return deepcopy(self._extensions[extension_name].configuration)
+        extension_data = self._extensions.get(extension_name)
+        return deepcopy(extension_data.configuration) if extension_data else {}
 
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.
@@ -381,6 +437,13 @@ class ExtensionManager:
         except KeyError:
             return False
 
+    def needs_restart(self, extension_name: str) -> bool:
+        """Returns whether the extension with the given name should be restarted
+        in order to activate the new configuration.
+        """
+        extension_data = self._extensions.get(extension_name)
+        return extension_data and extension_data.needs_restart
+
     async def run(
         self, *, configuration: Configuration, app: Any, task_status=TASK_STATUS_IGNORED
     ) -> None:
@@ -394,7 +457,7 @@ class ExtensionManager:
         try:
             self._task_queue, task_queue_rx = open_memory_channel(1024)
 
-            await self._configure(configuration, app=app)
+            await self._configure_and_load_extensions(configuration, app=app)
 
             async with open_nursery() as nursery:
                 task_status.started()
@@ -542,7 +605,7 @@ class ExtensionManager:
         log = add_id_to_log(base_log, id=extension_name)
 
         extension_data = self._extensions[extension_name]
-        configuration = extension_data.configuration
+        configuration = extension_data.commit_configuration_changes()
 
         log.debug("Loading extension")
         try:
@@ -749,6 +812,9 @@ class ExtensionManager:
 
         for dependency in self._get_dependencies_of_extension(extension_name):
             self._extensions[dependency].dependents.remove(extension_name)
+
+        # Commit any pending changes to the configuration of the extension
+        extension_data.commit_configuration_changes()
 
         # Send a signal that the extension was unloaded
         self.unloaded.send(self, name=extension_name, extension=extension)
