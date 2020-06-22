@@ -795,10 +795,12 @@ class ExtensionManager:
         # Unload the extension
         clean_unload = True
 
+        args = (self.app,)
+
         func = getattr(extension, "unload", None)
         if callable(func):
             try:
-                func(self.app)
+                bind(func, args, partial=True)()
             except Exception:
                 clean_unload = False
                 log.exception("Error while unloading extension; forcing unload")
