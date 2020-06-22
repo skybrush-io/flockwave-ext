@@ -1,7 +1,9 @@
 """Base class for extensions."""
 
+from contextlib import asynccontextmanager
 from logging import Logger
-from typing import Any, Dict
+from trio import Lock, Nursery, open_nursery, WouldBlock
+from typing import Any, Callable, AsyncContextManager, Dict
 
 __all__ = ("ExtensionBase",)
 
@@ -15,6 +17,9 @@ class ExtensionBase:
     def __init__(self):
         """Constructor."""
         self._app = None
+        self._nursery = None
+        self._nursery_lock = Lock()
+
         self.log = None
 
     @property
@@ -67,6 +72,42 @@ class ExtensionBase:
         """
         pass
 
+    def run_in_background(self, func: Callable, *args, protect: bool = True) -> None:
+        """Schedules the given function to be executed in the background in the
+        context of this extension. The function is automatically stopped when
+        the extension is unloaded.
+
+        This function requires the extension-specific nursery to be open; use
+        the `use_nursery()` context manager to open the nursery.
+
+        Parameters:
+            protect: whether to protect the nursery that the function is running
+                in from closing when the function raises an exception
+        """
+        if not self._nursery:
+            raise RuntimeError(
+                "Cannot run task in background, the extension has not started "
+                + "serving background tasks yet. Did you forget to call "
+                + "use_nursery()?"
+            )
+
+        if protect:
+            self._nursery.start_soon(self._run_protected, func, *args)
+        else:
+            self._nursery.start_soon(func, *args)
+
+    async def _run_protected(self, func, *args) -> None:
+        """Runs the given function in a "protected" mode that prevents exceptions
+        emitted from it to crash the nursery that the function is being executed
+        in.
+        """
+        try:
+            await func(*args)
+        except Exception:
+            self.log.exception(
+                f"Unexpected exception caught from background task {func.__name__}"
+            )
+
     def spindown(self) -> None:
         """Handler that is called by the extension manager when the
         last client disconnects from the server.
@@ -111,3 +152,24 @@ class ExtensionBase:
         self.teardown()
         self.log = None
         self.app = None
+
+    @asynccontextmanager
+    async def use_nursery(self) -> AsyncContextManager[Nursery]:
+        """Async context manager that opens a private, extension-specific nursery
+        that the extension can use to run background tasks in.
+        """
+        if self._nursery_lock is None:
+            self._nursery_lock = Lock()
+
+        try:
+            self._nursery_lock.acquire_nowait()
+        except WouldBlock:
+            raise RuntimeError("The nursery of the extension is already open")
+
+        try:
+            async with open_nursery() as nursery:
+                self._nursery = nursery
+                yield self._nursery
+        finally:
+            self._nursery = nursery
+            self._nursery_lock.release()
