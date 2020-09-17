@@ -4,6 +4,7 @@
 .python-version
 .tags
 .venv/
+.vscode/
 build/
 dist/
 .eggs/
