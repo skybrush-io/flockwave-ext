@@ -245,8 +245,11 @@ class ExtensionManager:
         await self.teardown()
 
         for extension_name, extension_cfg in configuration.items():
-            self.configure(extension_name, extension_cfg)
-            loaded_extensions.add(extension_name)
+            try:
+                self.configure(extension_name, extension_cfg)
+                loaded_extensions.add(extension_name)
+            except KeyError:
+                base_log.error(f"No such extension: {extension_name}")
 
         for extension_name in sorted(loaded_extensions):
             ext = self._extensions[extension_name]
