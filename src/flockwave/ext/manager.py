@@ -16,6 +16,7 @@ from typing import Any, Dict, Generator, Generic, List, Optional, Set, Type, Typ
 from flockwave.logger import add_id_to_log, log as base_log, Logger
 
 from .base import Configuration, ExtensionBase
+from .errors import ApplicationExit
 from .utils import bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
@@ -90,7 +91,7 @@ class LoadOrder(Generic[T]):
 
 
 @dataclass
-class ExtensionData(object):
+class ExtensionData:
     """Data that the extension manager stores related to each extension.
 
     Attributes:
@@ -450,7 +451,7 @@ class ExtensionManager:
     async def run(
         self, *, configuration: Configuration, app: Any, task_status=TASK_STATUS_IGNORED
     ) -> None:
-        """Asynchronous task that runs the exception manager itself.
+        """Asynchronous task that runs the extension manager itself.
 
         This task simply waits for messages that request certain tasks managed
         by the extensions to be started. It also takes care of catching
@@ -631,6 +632,9 @@ class ExtensionManager:
         if callable(func):
             try:
                 result = bind(func, args, partial=True)()
+            except ApplicationExit:
+                # Let this exception propagate
+                raise
             except Exception:
                 log.exception("Error while loading extension")
                 return None
@@ -780,8 +784,10 @@ class ExtensionManager:
         # Get the associated internal bookkeeping object of the extension
         extension_data = self._extensions[extension_name]
         if extension_data.dependents:
-            message = "Failed to unload extension {0!r} because it is still in use".format(
-                extension_name
+            message = (
+                "Failed to unload extension {0!r} because it is still in use".format(
+                    extension_name
+                )
             )
             raise RuntimeError(message)
 
@@ -804,6 +810,9 @@ class ExtensionManager:
         if callable(func):
             try:
                 bind(func, args, partial=True)()
+            except ApplicationExit:
+                # Let this exception propagate
+                raise
             except Exception:
                 clean_unload = False
                 log.exception("Error while unloading extension; forcing unload")
