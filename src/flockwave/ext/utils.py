@@ -4,6 +4,7 @@ from inspect import iscoroutinefunction, Parameter, signature
 from logging import Logger
 from typing import Callable, Union
 
+from trio import MultiError
 
 __all__ = ("bind", "cancellable", "keydefaultdict", "protected")
 
@@ -97,7 +98,7 @@ def protected(handler: Union[Logger, Callable]):
             async def decorated(*args, **kwds):
                 try:
                     return await func(*args, **kwds)
-                except Exception as ex:
+                except (MultiError, Exception) as ex:
                     if iscoroutinefunction(handler):
                         await handler(ex)
                     else:

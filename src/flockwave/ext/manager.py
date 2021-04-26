@@ -758,10 +758,13 @@ class ExtensionManager:
         task = getattr(extension, "worker", None)
         if iscoroutinefunction(task):
             args = (self.app, extension_data.configuration, extension_data.log)
-            self._extensions[extension_name].worker = await self._run_in_background(
-                cancellable(bind(task, args, partial=True)),
+            task = bind(task, args, partial=True)
+            extension_data.worker = await self._run_in_background(
+                self._protect_extension_task(cancellable(task), extension_name),
                 name=f"extension:{extension_name}/worker",
             )
+        elif task is not None:
+            log.warn("worker() must be an async function")
 
     async def _unload(self, extension_name: str, forbidden: List[str]) -> None:
         if not self._ensure_no_cycle(forbidden, extension_name):
