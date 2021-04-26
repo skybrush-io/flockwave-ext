@@ -70,6 +70,15 @@ class keydefaultdict(defaultdict):
             return ret
 
 
+def _multierror_has_base_exception(multi_ex: MultiError) -> bool:
+    for ex in multi_ex.exceptions:
+        if isinstance(ex, MultiError) and _multierror_has_base_exception(ex):
+            return True
+        if not isinstance(ex, Exception):
+            return True
+    return False
+
+
 def protected(handler: Union[Logger, Callable]):
     """Decorator factory that creates a decorator that decorates a function and
     ensures that the exceptions do not propagate out from the function.
@@ -98,7 +107,18 @@ def protected(handler: Union[Logger, Callable]):
             async def decorated(*args, **kwds):
                 try:
                     return await func(*args, **kwds)
-                except (MultiError, Exception) as ex:
+                except MultiError as multi_ex:
+                    # If there is at least one BaseException in the MultiError,
+                    # re-raise the entire MultiError. This is needed to allow
+                    # Trio to handle Cancelled exceptions properly
+                    if _multierror_has_base_exception(multi_ex):
+                        raise
+                    else:
+                        if iscoroutinefunction(handler):
+                            await handler(ex)
+                        else:
+                            handler(ex)
+                except Exception as ex:
                     if iscoroutinefunction(handler):
                         await handler(ex)
                     else:
