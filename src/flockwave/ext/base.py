@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from logging import Logger
 from trio import Lock, Nursery, open_nursery, WouldBlock
-from typing import Any, Callable, AsyncContextManager, Dict
+from typing import Any, AsyncIterator, Callable, Dict, Generic, Optional, TypeVar
 
 __all__ = ("ExtensionBase",)
 
@@ -11,8 +11,16 @@ __all__ = ("ExtensionBase",)
 Configuration = Dict[str, Any]
 
 
-class ExtensionBase:
+TApp = TypeVar("TApp")
+
+
+class ExtensionBase(Generic[TApp]):
     """Interface specification for Flockwave extensions."""
+
+    _app: Optional[TApp]
+    _nursery: Optional[Nursery]
+
+    log: Optional[Logger]
 
     def __init__(self):
         """Constructor."""
@@ -23,12 +31,12 @@ class ExtensionBase:
         self.log = None
 
     @property
-    def app(self):
+    def app(self) -> Optional[TApp]:
         """The application that the extension is attached to."""
         return self._app
 
     @app.setter
-    def app(self, value):
+    def app(self, value: Optional[TApp]) -> None:
         old_value = self._app
         self._app = value
         self.on_app_changed(old_value, self._app)
@@ -44,7 +52,7 @@ class ExtensionBase:
         """
         pass
 
-    def load(self, app, configuration: Configuration, logger: Logger) -> None:
+    def load(self, app: TApp, configuration: Configuration, logger: Logger) -> None:
         """Handler that is called by the extension manager when the
         extension is loaded into the application.
 
@@ -62,9 +70,9 @@ class ExtensionBase:
         self.log = logger
         self.configure(configuration)
 
-    def on_app_changed(self, old_app, new_app) -> None:
+    def on_app_changed(self, old_app: Optional[TApp], new_app: Optional[TApp]) -> None:
         """Handler that is called when the extension is associated to an
-        application.
+        application or detached from an application.
 
         Arguments:
             old_app: the old application
@@ -137,7 +145,7 @@ class ExtensionBase:
         """
         pass
 
-    def unload(self, app) -> None:
+    def unload(self, app: TApp) -> None:
         """Handler that is called by the extension manager when the
         extension is unloaded.
 
@@ -154,7 +162,7 @@ class ExtensionBase:
         self.app = None
 
     @asynccontextmanager
-    async def use_nursery(self) -> AsyncContextManager[Nursery]:
+    async def use_nursery(self) -> AsyncIterator[Nursery]:
         """Async context manager that opens a private, extension-specific nursery
         that the extension can use to run background tasks in.
         """
@@ -171,5 +179,5 @@ class ExtensionBase:
                 self._nursery = nursery
                 yield self._nursery
         finally:
-            self._nursery = nursery
+            self._nursery = None
             self._nursery_lock.release()

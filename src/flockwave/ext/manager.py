@@ -1,6 +1,6 @@
 """Extension manager class for Flockwave."""
 
-from __future__ import absolute_import, annotations
+from __future__ import annotations
 
 import importlib
 
@@ -11,11 +11,22 @@ from functools import partial
 from inspect import iscoroutinefunction
 from pkgutil import get_loader
 from trio import CancelScope, open_memory_channel, open_nursery, TASK_STATUS_IGNORED
-from typing import Any, Dict, Generator, Generic, List, Optional, Set, Type, TypeVar
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    TypeVar,
+)
 
 from flockwave.logger import add_id_to_log, log as base_log, Logger
 
-from .base import Configuration, ExtensionBase
+from .base import Configuration, ExtensionBase, TApp
 from .errors import ApplicationExit
 from .utils import bind, cancellable, keydefaultdict, protected
 
@@ -30,34 +41,44 @@ T = TypeVar("T")
 ExtensionConfiguration = Dict[str, Any]
 
 
+@dataclass
+class Node(Generic[T]):
+    next: "Node[T]" = field(init=False)
+    prev: "Node[T]" = field(init=False)
+    data: Optional[T] = None
+
+    def __post_init__(self):
+        self.next = self.prev = self
+
+
 class LoadOrder(Generic[T]):
     """Helper object that maintains the order in which extensions were loaded
     so we can unload them in reverse order.
     """
 
-    @dataclass
-    class Node:
-        data: Any = None
-        next: Type["Node"] = None
-        prev: Type["Node"] = None
+    _guard: Node[T]
+    _tail: Node[T]
+    _dict: Dict[T, Node[T]]
 
     def __init__(self):
-        self._guard = self._tail = LoadOrder.Node()
-        self._tail.prev = self._tail.next = self._tail
+        self._guard = self._tail = Node()
         self._dict = {}
 
-    def items(self) -> Generator[T, None, None]:
+    def items(self) -> Iterable[T]:
         item = self._guard
         item = item.next
         while item is not self._guard:
+            assert item.data is not None
             yield item.data
             item = item.next
 
     def notify_loaded(self, name: T) -> None:
         """Notifies the object that the given extension was loaded."""
+        assert name is not None
+
         item = self._dict.get(name)
         if not item:
-            item = self._dict[name] = LoadOrder.Node(name)
+            item = self._dict[name] = Node(name)
         else:
             self._unlink_item(item)
 
@@ -73,16 +94,17 @@ class LoadOrder(Generic[T]):
         if item:
             return self._unlink_item(item)
 
-    def reversed(self) -> Generator[T, None, None]:
+    def reversed(self) -> Iterable[T]:
         """Returns a generator that generates items in reversed order compared
         to how they were added.
         """
         item = self._tail
         while item is not self._guard:
+            assert item.data is not None
             yield item.data
             item = item.prev
 
-    def _unlink_item(self, item: Node) -> None:
+    def _unlink_item(self, item: Node[T]) -> None:
         if self._tail is item:
             self._tail = item.prev
 
@@ -115,18 +137,18 @@ class ExtensionData:
 
     name: str
 
-    api_proxy: Optional[object] = None
+    api_proxy: Optional["ExtensionAPIProxy"] = None
     configuration: ExtensionConfiguration = field(default_factory=dict)
     dependents: Set[str] = field(default_factory=set)
     instance: Optional[object] = None
     loaded: bool = False
-    log: Logger = None
+    log: Optional[Logger] = None
     next_configuration: Optional[ExtensionConfiguration] = None
     task: Optional[CancelScope] = None
     worker: Optional[CancelScope] = None
 
     @classmethod
-    def for_extension(cls, name):
+    def for_extension(cls, name: str) -> "ExtensionData":
         return cls(name=name, log=base_log.getChild(name))
 
     def commit_configuration_changes(self) -> ExtensionConfiguration:
@@ -168,7 +190,7 @@ class ExtensionData:
         return self.next_configuration is not None
 
 
-class ExtensionManager:
+class ExtensionManager(Generic[TApp]):
     """Central extension manager for a Flockwave application that manages
     the loading, configuration and unloading of extensions.
     """
@@ -187,7 +209,13 @@ class ExtensionManager:
     """
     )
 
-    def __init__(self, package_root=None):
+    _app: Optional[TApp]
+    _extensions: keydefaultdict[str, ExtensionData]
+    _extension_package_root: str
+    _load_order: LoadOrder[str]
+    _spinning: bool
+
+    def __init__(self, package_root: Optional[str] = None):
         """Constructor.
 
         Parameters:
@@ -201,13 +229,13 @@ class ExtensionManager:
         self._spinning = False
 
     @property
-    def app(self):
+    def app(self) -> Optional[TApp]:
         """The application context of the extension manager. This will also
         be passed on to the extensions when they are initialized.
         """
         return self._app
 
-    async def set_app(self, value):
+    async def set_app(self, value: Optional[TApp]) -> None:
         """Asynchronous setter for the application context of the
         extension manager.
         """
@@ -258,7 +286,7 @@ class ExtensionManager:
             if enabled:
                 await self.load(extension_name)
 
-    def _create_extension_data(self, extension_name: str) -> None:
+    def _create_extension_data(self, extension_name: str) -> ExtensionData:
         """Creates a helper object holding all data related to the extension
         with the given name.
 
@@ -275,7 +303,7 @@ class ExtensionManager:
             data.api_proxy = ExtensionAPIProxy(self, extension_name)
             return data
 
-    def _get_loaded_extension_by_name(self, extension_name: str) -> ExtensionBase:
+    def _get_loaded_extension_by_name(self, extension_name: str) -> Any:
         """Returns the extension object corresponding to the extension
         with the given name if it is loaded.
 
@@ -320,7 +348,9 @@ class ExtensionManager:
         """
         return "{0}.{1}".format(self._extension_package_root, extension_name)
 
-    def configure(self, extension_name: str, configuration: Dict) -> None:
+    def configure(
+        self, extension_name: str, configuration: ExtensionConfiguration
+    ) -> None:
         """Configures the extension with the given name.
 
         Changes to the configuration of an extension that is already loaded will
@@ -343,7 +373,7 @@ class ExtensionManager:
         module_name = self._get_module_name_for_extension(extension_name)
         return get_loader(module_name) is not None
 
-    def get_configuration_snapshot(self, extension_name: str) -> Dict:
+    def get_configuration_snapshot(self, extension_name: str) -> ExtensionConfiguration:
         """Returns a snapshot of the configuration of the given extension.
 
         The snapshot is a deep copy of the configuration object of the
@@ -388,7 +418,10 @@ class ExtensionManager:
         Raises:
             KeyError: if the extension with the given name does not exist
         """
-        return self._extensions[extension_name].api_proxy
+        proxy = self._extensions[extension_name].api_proxy
+        if proxy is None:
+            raise RuntimeError("Extension {extension_name} does not have an API")
+        return proxy
 
     async def load(self, extension_name: str) -> None:
         """Loads an extension with the given name.
@@ -446,10 +479,14 @@ class ExtensionManager:
         in order to activate the new configuration.
         """
         extension_data = self._extensions.get(extension_name)
-        return extension_data and extension_data.needs_restart
+        return extension_data.needs_restart if extension_data else False
 
     async def run(
-        self, *, configuration: Configuration, app: Any, task_status=TASK_STATUS_IGNORED
+        self,
+        *,
+        configuration: Configuration,
+        app: TApp,
+        task_status=TASK_STATUS_IGNORED,
     ) -> None:
         """Asynchronous task that runs the extension manager itself.
 
@@ -476,7 +513,13 @@ class ExtensionManager:
         finally:
             self._task_queue = None
 
-    async def _run_in_background(self, func, *args, name=None, cancellable=False):
+    async def _run_in_background(
+        self,
+        func: Callable[..., Any],
+        *args,
+        name: Optional[str] = None,
+        cancellable: bool = False,
+    ) -> Optional[CancelScope]:
         """Runs the given function as a background task in the extension
         manager.
 
@@ -665,7 +708,9 @@ class ExtensionManager:
 
         return result
 
-    async def _on_extension_task_crashed(self, extension_name: str) -> None:
+    async def _on_extension_task_crashed(
+        self, extension_name: str, exc: BaseException
+    ) -> None:
         """Handles an exception that originated from the extension with the
         given name.
         """
@@ -675,7 +720,9 @@ class ExtensionManager:
 
         await self.unload(extension_name)
 
-    def _protect_extension_task(self, func, extension_name):
+    def _protect_extension_task(
+        self, func: Callable[..., Awaitable[T]], extension_name: str
+    ) -> Callable[..., Awaitable[Optional[T]]]:
         """Given a main asynchronous task corresponding to an extension,
         returns another async task that handles exceptions coming from the
         task gracefully, without crashing the extension manager.
@@ -683,8 +730,8 @@ class ExtensionManager:
 
         # Don't use partial() here -- it's hard to detect whether a partial
         # function is async or not
-        async def handler(exc):
-            await self._on_extension_task_crashed(extension_name)
+        async def handler(exc: BaseException) -> None:
+            await self._on_extension_task_crashed(extension_name, exc)
 
         return protected(handler)(func)
 
@@ -844,7 +891,7 @@ class ExtensionManager:
 
     async def _ensure_dependencies_loaded(
         self, extension_name: str, forbidden: List[str]
-    ):
+    ) -> None:
         """Ensures that all the dependencies of the given extension are
         loaded.
 
@@ -866,7 +913,7 @@ class ExtensionManager:
 
     async def _ensure_reverse_dependencies_unloaded(
         self, extension_name: str, forbidden: List[str]
-    ):
+    ) -> None:
         """Ensures that all the dependencies of the given extension are
         unloaded.
 
@@ -940,7 +987,7 @@ class ExtensionAPIProxy:
         """
         return self._loaded
 
-    def _get_api_of_extension(self, extension_name: str):
+    def _get_api_of_extension(self, extension_name: str) -> Any:
         """Returns the API of the given extension."""
         extension = self._manager._get_loaded_extension_by_name(extension_name)
         api = getattr(extension, "exports", None)
@@ -951,8 +998,8 @@ class ExtensionAPIProxy:
         if not hasattr(api, "__getitem__"):
             raise TypeError(
                 "exports of extension {0!r} must support item "
-                "access with the [] operator"
-            ).format(extension_name)
+                "access with the [] operator".format(extension_name)
+            )
         return api
 
     def _on_extension_loaded(self, sender, name: str, extension: ExtensionBase) -> None:
