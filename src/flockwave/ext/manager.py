@@ -423,6 +423,19 @@ class ExtensionManager(Generic[TApp]):
             raise RuntimeError("Extension {extension_name} does not have an API")
         return proxy
 
+    @property
+    def known_extensions(self) -> List[str]:
+        """Returns a list containing the names of all the extensions that the
+        extension manager currently knows about (even if they are currently
+        unloaded). The caller is free to modify the list; it will not affect
+        the extension manager.
+
+        Returns:
+            the names of all the extensions that are currently known to the
+            extension manager
+        """
+        return sorted(self._extensions.keys())
+
     async def load(self, extension_name: str) -> None:
         """Loads an extension with the given name.
 
