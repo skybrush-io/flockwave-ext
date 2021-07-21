@@ -11,6 +11,7 @@ from functools import partial
 from inspect import iscoroutinefunction
 from pkgutil import get_loader
 from trio import CancelScope, open_memory_channel, open_nursery, TASK_STATUS_IGNORED
+from trio.abc import SendChannel
 from typing import (
     Any,
     Awaitable,
@@ -21,6 +22,7 @@ from typing import (
     List,
     Optional,
     Set,
+    Tuple,
     TypeVar,
 )
 
@@ -122,6 +124,7 @@ class ExtensionData:
         configuration: the current configuration object of the extension
         dependents: names of other loaded extensions that depend on this
             extension
+        description: a human-readable description of the extension (optional)
         instance: the loaded instance of the extension
         loaded: whether the extension is loaded
         next_configuration: the next configuration object of the extension that
@@ -140,6 +143,7 @@ class ExtensionData:
     api_proxy: Optional["ExtensionAPIProxy"] = None
     configuration: ExtensionConfiguration = field(default_factory=dict)
     dependents: Set[str] = field(default_factory=set)
+    description: Optional[str] = None
     instance: Optional[object] = None
     loaded: bool = False
     log: Optional[Logger] = None
@@ -214,6 +218,11 @@ class ExtensionManager(Generic[TApp]):
     _extension_package_root: str
     _load_order: LoadOrder[str]
     _spinning: bool
+    _task_queue: Optional[
+        SendChannel[
+            Tuple[Callable[..., Any], Any, Optional[CancelScope], Optional[str]]
+        ]
+    ]
 
     def __init__(self, package_root: Optional[str] = None):
         """Constructor.
@@ -390,6 +399,61 @@ class ExtensionManager(Generic[TApp]):
         extension_data = self._extensions.get(extension_name)
         return deepcopy(extension_data.configuration) if extension_data else {}
 
+    def get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
+        """Determines the list of extensions that a given extension depends
+        on directly.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the names of the extensions that the given extension depends on
+        """
+        try:
+            module = self._get_module_for_extension(extension_name)
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            raise
+
+        func = getattr(module, "get_dependencies", None)
+        if callable(func):
+            try:
+                dependencies = func()
+            except Exception:
+                base_log.exception(
+                    "Error while determining dependencies of "
+                    "extension {0!r}".format(extension_name)
+                )
+                dependencies = None
+        else:
+            dependencies = getattr(module, "dependencies", None)
+
+        return set(dependencies or [])
+
+    def get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
+        """Determines the list of _loaded_ extensions that depend on a given
+        extension directly.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the names of the extensions that the given extension depends on
+        """
+        reverse_dependencies = set()
+
+        if self.is_loaded(extension_name):
+            for other_name in self._load_order.reversed():
+                if other_name == extension_name:
+                    break
+
+                if extension_name in self.get_dependencies_of_extension(other_name):
+                    reverse_dependencies.add(other_name)
+
+        return reverse_dependencies
+
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.
 
@@ -538,6 +602,8 @@ class ExtensionManager(Generic[TApp]):
 
         Blocks until the task is started.
         """
+        assert self._task_queue is not None
+
         scope = CancelScope() if cancellable or hasattr(func, "_cancellable") else None
         await self._task_queue.send((func, args, scope, name))
         return scope
@@ -584,61 +650,6 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension to unload
         """
         return await self._unload(extension_name, forbidden=[])
-
-    def _get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
-        """Determines the list of extensions that a given extension depends
-        on directly.
-
-        Parameters:
-            extension_name: the name of the extension
-
-        Returns:
-            the names of the extensions that the given extension depends on
-        """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
-
-        func = getattr(module, "get_dependencies", None)
-        if callable(func):
-            try:
-                dependencies = func()
-            except Exception:
-                base_log.exception(
-                    "Error while determining dependencies of "
-                    "extension {0!r}".format(extension_name)
-                )
-                dependencies = None
-        else:
-            dependencies = getattr(module, "dependencies", None)
-
-        return set(dependencies or [])
-
-    def _get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
-        """Determines the list of _loaded_ extensions that depend on a given
-        extension directly.
-
-        Parameters:
-            extension_name: the name of the extension
-
-        Returns:
-            the names of the extensions that the given extension depends on
-        """
-        reverse_dependencies = set()
-
-        if self.is_loaded(extension_name):
-            for other_name in self._load_order.reversed():
-                if other_name == extension_name:
-                    break
-
-                if extension_name in self._get_dependencies_of_extension(other_name):
-                    reverse_dependencies.add(other_name)
-
-        return reverse_dependencies
 
     async def _load(self, extension_name: str, forbidden: List[str]):
         if not self._ensure_no_cycle(forbidden, extension_name):
@@ -711,7 +722,7 @@ class ExtensionManager(Generic[TApp]):
         extension_data.loaded = True
         self._load_order.notify_loaded(extension_name)
 
-        for dependency in self._get_dependencies_of_extension(extension_name):
+        for dependency in self.get_dependencies_of_extension(extension_name):
             self._extensions[dependency].dependents.add(extension_name)
 
         self.loaded.send(self, name=extension_name, extension=extension)
@@ -887,7 +898,7 @@ class ExtensionManager(Generic[TApp]):
         # Remove the extension from its dependents
         self._load_order.notify_unloaded(extension_name)
 
-        for dependency in self._get_dependencies_of_extension(extension_name):
+        for dependency in self.get_dependencies_of_extension(extension_name):
             self._extensions[dependency].dependents.remove(extension_name)
 
         # Commit any pending changes to the configuration of the extension
@@ -918,7 +929,7 @@ class ExtensionManager(Generic[TApp]):
         Raises:
             ImportError: if an extension cannot be imported
         """
-        dependencies = self._get_dependencies_of_extension(extension_name)
+        dependencies = self.get_dependencies_of_extension(extension_name)
         forbidden.append(extension_name)
         for dependency in dependencies:
             await self._load(dependency, forbidden)
@@ -940,7 +951,7 @@ class ExtensionManager(Generic[TApp]):
         Raises:
             ImportError: if an extension cannot be imported
         """
-        dependencies = self._get_reverse_dependencies_of_extension(extension_name)
+        dependencies = self.get_reverse_dependencies_of_extension(extension_name)
         forbidden.append(extension_name)
         for dependency in dependencies:
             await self._unload(dependency, forbidden)
