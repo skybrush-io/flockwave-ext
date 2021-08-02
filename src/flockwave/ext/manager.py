@@ -12,6 +12,7 @@ from inspect import iscoroutinefunction
 from pkgutil import get_loader
 from trio import CancelScope, open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
+from types import ModuleType
 from typing import (
     Any,
     Awaitable,
@@ -124,7 +125,6 @@ class ExtensionData:
         configuration: the current configuration object of the extension
         dependents: names of other loaded extensions that depend on this
             extension
-        description: a human-readable description of the extension (optional)
         instance: the loaded instance of the extension
         loaded: whether the extension is loaded
         next_configuration: the next configuration object of the extension that
@@ -143,7 +143,6 @@ class ExtensionData:
     api_proxy: Optional["ExtensionAPIProxy"] = None
     configuration: ExtensionConfiguration = field(default_factory=dict)
     dependents: Set[str] = field(default_factory=set)
-    description: Optional[str] = None
     instance: Optional[object] = None
     loaded: bool = False
     log: Optional[Logger] = None
@@ -335,7 +334,7 @@ class ExtensionManager(Generic[TApp]):
         else:
             return ext.instance
 
-    def _get_module_for_extension(self, extension_name: str):
+    def _get_module_for_extension(self, extension_name: str) -> ModuleType:
         """Returns the module that contains the given extension.
 
         Parameters:
@@ -431,6 +430,53 @@ class ExtensionManager(Generic[TApp]):
             dependencies = getattr(module, "dependencies", None)
 
         return set(dependencies or [])
+
+    def get_description_of_extension(self, extension_name: str) -> Optional[str]:
+        """Returns a human-readable description of the extension with the given
+        name (if the extension provides a description).
+
+        An extension may provide a description by defining a `get_description`
+        attribute (which must be a function that can be called with no arguments)
+        or a `description` attribute (which must be a string). In the absence of
+        these attributes, the description will be derived from the first
+        paragraph of the docstring of the extension.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the description of the extension or `None` if the extension does not
+            provide a description
+        """
+        try:
+            module = self._get_module_for_extension(extension_name)
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            raise
+
+        func = getattr(module, "get_description", None)
+        if callable(func):
+            try:
+                description = func()
+            except Exception:
+                base_log.exception(
+                    "Error while getting the description of extension {0!r}".format(
+                        extension_name
+                    )
+                )
+                description = None
+        elif hasattr(module, "description"):
+            description = str(getattr(module, "description"))
+        else:
+            description = getattr(module, "__doc__")
+            if description and isinstance(description, str):
+                description, _, _ = description.strip().partition("\n\n")
+            else:
+                description = None
+
+        return description
 
     def get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
         """Determines the list of _loaded_ extensions that depend on a given
