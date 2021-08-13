@@ -43,6 +43,9 @@ T = TypeVar("T")
 #: Type alias for the configuration objects of the extensions
 ExtensionConfiguration = Dict[str, Any]
 
+#: Type alias for the configuration schema of an extension
+ExtensionConfigurationSchema = Dict[str, Any]
+
 
 @dataclass
 class Node(Generic[T]):
@@ -380,6 +383,57 @@ class ExtensionManager(Generic[TApp]):
         """
         module_name = self._get_module_name_for_extension(extension_name)
         return get_loader(module_name) is not None
+
+    def get_configuration_schema(
+        self, extension_name: str
+    ) -> Optional[ExtensionConfigurationSchema]:
+        """Returns a JSON-Schema description of the expected format of the
+        configuration of the given extension, if the extension provides one.
+
+        Parameters:
+            extension_name: the name of the extension whose configuration schema
+                is to be retrieved
+
+        Returns:
+            the configuration schema of the extension or `None` if the extension
+            does not provide a configuration schema
+        """
+        try:
+            module = self._get_module_for_extension(extension_name)
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            raise
+
+        func = getattr(module, "get_schema", None)
+        if callable(func):
+            try:
+                schema = func()
+            except Exception:
+                base_log.exception(
+                    "Error while retrieving configuration schema of "
+                    "extension {0!r}".format(extension_name)
+                )
+                raise
+        else:
+            schema = getattr(module, "schema", None)
+
+        if schema is None:
+            return schema
+
+        if not isinstance(schema, dict):
+            raise RuntimeError("configuration schema must be a dictionary")
+
+        if "type" in schema and schema["type"] != "object":
+            raise RuntimeError("configuration schema must describe a JSON object")
+
+        schema = deepcopy(schema)
+
+        if "type" not in schema:
+            schema["type"] = "object"
+
+        return schema
 
     def get_configuration_snapshot(self, extension_name: str) -> ExtensionConfiguration:
         """Returns a snapshot of the configuration of the given extension.
