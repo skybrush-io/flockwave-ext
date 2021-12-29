@@ -289,7 +289,10 @@ class ExtensionManager(Generic[TApp]):
                 self.configure(extension_name, extension_cfg)
                 loaded_extensions.add(extension_name)
             except KeyError:
-                base_log.error(f"No such extension: {extension_name}")
+                # It is not a problem if the extension is disabled anyway
+                enabled = extension_cfg.get("enabled", True)
+                if not enabled:
+                    base_log.error(f"No such extension: {extension_name}")
 
         for extension_name in sorted(loaded_extensions):
             ext = self._extensions[extension_name]
