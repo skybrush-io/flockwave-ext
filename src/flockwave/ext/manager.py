@@ -291,7 +291,7 @@ class ExtensionManager(Generic[TApp]):
             except KeyError:
                 # It is not a problem if the extension is disabled anyway
                 enabled = extension_cfg.get("enabled", True)
-                if not enabled:
+                if enabled:
                     base_log.error(f"No such extension: {extension_name}")
 
         for extension_name in sorted(loaded_extensions):
