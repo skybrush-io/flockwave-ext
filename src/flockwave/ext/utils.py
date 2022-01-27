@@ -119,7 +119,7 @@ def protected(
     ...
 
 
-def protected(handler):
+def protected(handler) -> Any:
     """Decorator factory that creates a decorator that decorates a function and
     ensures that the exceptions do not propagate out from the function.
 

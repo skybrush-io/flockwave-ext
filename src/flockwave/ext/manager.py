@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
-
 from blinker import Signal
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from inspect import iscoroutinefunction
-from pkgutil import get_loader
 from trio import CancelScope, open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
 from types import ModuleType
@@ -30,7 +27,8 @@ from typing import (
 from flockwave.logger import add_id_to_log, log as base_log, Logger
 
 from .base import Configuration, ExtensionBase, TApp
-from .errors import ApplicationExit
+from .discovery import ExtensionModuleFinder
+from .errors import ApplicationExit, NoSuchExtension
 from .utils import bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
@@ -122,36 +120,48 @@ class LoadOrder(Generic[T]):
 class ExtensionData:
     """Data that the extension manager stores related to each extension.
 
-    Attributes:
-        name: the name of the extension
-        api_proxy: the API object that the extension exports
-        configuration: the current configuration object of the extension
-        dependents: names of other loaded extensions that depend on this
-            extension
-        instance: the loaded instance of the extension
-        loaded: whether the extension is loaded
-        next_configuration: the next configuration object of the extension that
-            will be activated when the extension is loaded the next time
-        task (Optional[trio.CancelScope]): a cancellation scope for the
-            background task that was spawned for the extension when it
-            was loaded, or `None` if no such task was spawned
-        worker (Optional[trio.CancelScope]): a cancellation scope for the
-            worker task that was spawned for the extension when the first
-            client connected to the server, or `None` if no such worker
-            was spawned or there are no clients connected
+    Do not instantiate this object directly; use the ``for_extension()``
+    class method instead.
     """
 
     name: str
+    """The name of the extension."""
 
     api_proxy: Optional["ExtensionAPIProxy"] = None
+    """The API object that the extension exports."""
+
     configuration: ExtensionConfiguration = field(default_factory=dict)
+    """The current configuration object of the extension."""
+
     dependents: Set[str] = field(default_factory=set)
+    """Names of other loaded extensions that depend on this extension."""
+
     instance: Optional[object] = None
+    """The loaded instance of the extension; ``None`` if the extension is
+    not loaded.
+    """
+
     loaded: bool = False
+    """Whether the extension is loaded."""
+
     log: Optional[Logger] = None
+    """The logger associated to the extension."""
+
     next_configuration: Optional[ExtensionConfiguration] = None
+    """The next configuration object of the extension that will be
+    activated when the extension is loaded the next time.
+    """
+
     task: Optional[CancelScope] = None
+    """A cancellation scope for the background task that was spawned for the
+    extension when it was loaded, or `None` if no such task was spawned.
+    """
+
     worker: Optional[CancelScope] = None
+    """A cancellation scope for the worker task that was spawned for the
+    extension when the first client connected to the server, or ``None`` if no
+    such worker was spawned or there are no clients connected.
+    """
 
     @classmethod
     def for_extension(cls, name: str) -> "ExtensionData":
@@ -215,27 +225,51 @@ class ExtensionManager(Generic[TApp]):
     """
     )
 
+    module_finder: ExtensionModuleFinder
+    """Object that is responsible for finding extension modules given their
+    names.
+    """
+
     _app: Optional[TApp]
-    _extensions: keydefaultdict[str, ExtensionData]
-    _extension_package_root: str
+    """The application that owns the extension manager."""
+
+    _extension_data: keydefaultdict[str, ExtensionData]
+    """Dictionary mapping extension names to their associated data object."""
+
     _load_order: LoadOrder[str]
+    """Order in which the extensions were loaded."""
+
     _spinning: bool
+    """Whether the extension manager is "spinning". See the documentation of
+    the `spinning` property for more details.
+    """
+
     _task_queue: Optional[
         SendChannel[
             Tuple[Callable[..., Any], Any, Optional[CancelScope], Optional[str]]
         ]
     ]
+    """Queue containing background tasks to be spawned and their associated names
+    and cancel scopes.
+    """
 
     def __init__(self, package_root: Optional[str] = None):
         """Constructor.
 
         Parameters:
             package_root: the root package in which all other extension
-                packages should live
+                packages should live; ``None`` if no such package exists
+            entry_point_group: name of the PyPA entry point group that can be
+                used to discover extensions managed by this manager; ``None``
+                if discovery based on entry points should not be used
         """
+        self.module_finder = ExtensionModuleFinder()
+        if package_root:
+            self.module_finder.add_package_root(package_root)
+
         self._app = None
-        self._extensions = keydefaultdict(self._create_extension_data)
-        self._extension_package_root = package_root or EXT_PACKAGE_NAME
+
+        self._extension_data = keydefaultdict(self._create_extension_data)
         self._load_order = LoadOrder()
         self._spinning = False
 
@@ -280,22 +314,36 @@ class ExtensionManager(Generic[TApp]):
         if "app" in kwds:
             await self.set_app(kwds["app"])
 
-        loaded_extensions = set(self.loaded_extensions)
+        # Remember all the extensions that were loaded before this function
+        # was called
+        to_load = set(self.loaded_extensions)
 
+        # Temporarily stop all extensions while we process the new configuration
         await self.teardown()
 
+        # Process the configuration
         for extension_name, extension_cfg in configuration.items():
             try:
                 self.configure(extension_name, extension_cfg)
-                loaded_extensions.add(extension_name)
-            except KeyError:
+                to_load.add(extension_name)
+            except NoSuchExtension:
                 # It is not a problem if the extension is disabled anyway
                 enabled = extension_cfg.get("enabled", True)
                 if enabled:
-                    base_log.error(f"No such extension: {extension_name}")
+                    base_log.warning(f"No such extension: {extension_name}")
+            except ImportError:
+                # It is not a problem if the extension is disabled anyway
+                enabled = extension_cfg.get("enabled", True)
+                if enabled:
+                    base_log.exception(
+                        f"Error while importing extension: {extension_name}"
+                    )
 
-        for extension_name in sorted(loaded_extensions):
-            ext = self._extensions[extension_name]
+        # Check the extensions that were originally loaded, and any new
+        # extensions that were discovered from the configuration, and attempt
+        # to load them if they are enabled
+        for extension_name in sorted(to_load):
+            ext = self._extension_data[extension_name]
             enabled = ext.configuration.get("enabled", True)
             if enabled:
                 await self.load(extension_name)
@@ -308,10 +356,10 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension
 
         Raises:
-            KeyError: if the extension with the given name does not exist
+            NoSuchExtension: if the extension with the given name does not exist
         """
         if not self.exists(extension_name):
-            raise KeyError(extension_name)
+            raise NoSuchExtension(extension_name)
         else:
             data = ExtensionData.for_extension(extension_name)
             data.api_proxy = ExtensionAPIProxy(self, extension_name)
@@ -331,10 +379,10 @@ class ExtensionManager(Generic[TApp]):
             KeyError: if the extension with the given name is not declared in
                 the configuration file or if it is not loaded
         """
-        if extension_name not in self._extensions:
+        if extension_name not in self._extension_data:
             raise KeyError(extension_name)
 
-        ext = self._extensions[extension_name]
+        ext = self._extension_data[extension_name]
         if not ext.loaded or ext.instance is None:
             raise KeyError(extension_name)
         else:
@@ -348,19 +396,11 @@ class ExtensionManager(Generic[TApp]):
 
         Returns:
             module: the module containing the extension with the given name
-        """
-        module_name = self._get_module_name_for_extension(extension_name)
-        return importlib.import_module(module_name)
 
-    def _get_module_name_for_extension(self, extension_name: str) -> str:
-        """Returns the name of the module that should contain the given
-        extension.
-
-        Returns:
-            the full, dotted name of the module that should contain the
-            extension with the given name
+        Raises:
+            NoSuchExtension: if there is no such extension
         """
-        return "{0}.{1}".format(self._extension_package_root, extension_name)
+        return self.module_finder.get_module_for_extension(extension_name)
 
     def configure(
         self, extension_name: str, configuration: ExtensionConfiguration
@@ -372,7 +412,7 @@ class ExtensionManager(Generic[TApp]):
         configuration snapshot from the extension will still yield the old
         configuration until the next reload.
         """
-        self._extensions[extension_name].configure(configuration)
+        self._extension_data[extension_name].configure(configuration)
 
     def exists(self, extension_name: str) -> bool:
         """Returns whether the extension with the given name exists,
@@ -384,8 +424,7 @@ class ExtensionManager(Generic[TApp]):
         Returns:
             whether the extension exists
         """
-        module_name = self._get_module_name_for_extension(extension_name)
-        return get_loader(module_name) is not None
+        return self.module_finder.exists(extension_name)
 
     def get_configuration_schema(
         self, extension_name: str
@@ -399,10 +438,13 @@ class ExtensionManager(Generic[TApp]):
 
         Returns:
             the configuration schema of the extension or `None` if the extension
-            does not provide a configuration schema
+            does not exist or does not provide a configuration schema
         """
         try:
             module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            base_log.warning(f"No such extension: {extension_name}")
+            return None
         except ImportError:
             base_log.exception(
                 "Error while importing extension {0!r}".format(extension_name)
@@ -452,7 +494,7 @@ class ExtensionManager(Generic[TApp]):
         Returns:
             a deep copy of the configuration object of the extension
         """
-        extension_data = self._extensions.get(extension_name)
+        extension_data = self._extension_data.get(extension_name)
         return deepcopy(extension_data.configuration) if extension_data else {}
 
     def get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
@@ -463,10 +505,13 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension
 
         Returns:
-            the names of the extensions that the given extension depends on
+            the names of the extensions that the given extension depends on;
+            an empty set if the extension does not exist
         """
         try:
             module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            return set([])
         except ImportError:
             base_log.exception(
                 "Error while importing extension {0!r}".format(extension_name)
@@ -507,6 +552,9 @@ class ExtensionManager(Generic[TApp]):
         """
         try:
             module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            base_log.warning(f"No such extension: {extension_name}")
+            return None
         except ImportError:
             base_log.exception(
                 "Error while importing extension {0!r}".format(extension_name)
@@ -585,7 +633,7 @@ class ExtensionManager(Generic[TApp]):
         Raises:
             KeyError: if the extension with the given name does not exist
         """
-        proxy = self._extensions[extension_name].api_proxy
+        proxy = self._extension_data[extension_name].api_proxy
         if proxy is None:
             raise RuntimeError("Extension {extension_name} does not have an API")
         return proxy
@@ -601,7 +649,7 @@ class ExtensionManager(Generic[TApp]):
             the names of all the extensions that are currently known to the
             extension manager
         """
-        return sorted(self._extensions.keys())
+        return sorted(self._extension_data.keys())
 
     async def load(self, extension_name: str) -> None:
         """Loads an extension with the given name.
@@ -644,7 +692,7 @@ class ExtensionManager(Generic[TApp]):
         Returns:
             the names of all the extensions that are currently loaded
         """
-        return sorted(key for key, ext in self._extensions.items() if ext.loaded)
+        return sorted(key for key, ext in self._extension_data.items() if ext.loaded)
 
     def is_loaded(self, extension_name: str) -> bool:
         """Returns whether the given extension is loaded."""
@@ -658,7 +706,7 @@ class ExtensionManager(Generic[TApp]):
         """Returns whether the extension with the given name should be restarted
         in order to activate the new configuration.
         """
-        extension_data = self._extensions.get(extension_name)
+        extension_data = self._extension_data.get(extension_name)
         return extension_data.needs_restart if extension_data else False
 
     async def run(
@@ -778,12 +826,15 @@ class ExtensionManager(Generic[TApp]):
 
         log = add_id_to_log(base_log, id=extension_name)
 
-        extension_data = self._extensions[extension_name]
+        extension_data = self._extension_data[extension_name]
         configuration = extension_data.commit_configuration_changes()
 
         log.debug("Loading extension")
         try:
             module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            log.error(f"No such extension: {extension_name}")
+            return None
         except ImportError:
             log.exception("Error while importing extension")
             return None
@@ -826,7 +877,7 @@ class ExtensionManager(Generic[TApp]):
         self._load_order.notify_loaded(extension_name)
 
         for dependency in self.get_dependencies_of_extension(extension_name):
-            self._extensions[dependency].dependents.add(extension_name)
+            self._extension_data[dependency].dependents.add(extension_name)
 
         self.loaded.send(self, name=extension_name, extension=extension)
 
@@ -886,7 +937,7 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension to spin down.
         """
         extension = self._get_loaded_extension_by_name(extension_name)
-        extension_data = self._extensions[extension_name]
+        extension_data = self._extension_data[extension_name]
 
         log = add_id_to_log(base_log, id=extension_name)
 
@@ -915,7 +966,7 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension to spin up.
         """
         extension = self._get_loaded_extension_by_name(extension_name)
-        extension_data = self._extensions[extension_name]
+        extension_data = self._extension_data[extension_name]
 
         log = add_id_to_log(base_log, id=extension_name)
 
@@ -959,7 +1010,7 @@ class ExtensionManager(Generic[TApp]):
             return
 
         # Get the associated internal bookkeeping object of the extension
-        extension_data = self._extensions[extension_name]
+        extension_data = self._extension_data[extension_name]
         if extension_data.dependents:
             message = (
                 "Failed to unload extension {0!r} because it is still in use".format(
@@ -1002,7 +1053,7 @@ class ExtensionManager(Generic[TApp]):
         self._load_order.notify_unloaded(extension_name)
 
         for dependency in self.get_dependencies_of_extension(extension_name):
-            self._extensions[dependency].dependents.remove(extension_name)
+            self._extension_data[dependency].dependents.remove(extension_name)
 
         # Commit any pending changes to the configuration of the extension
         extension_data.commit_configuration_changes()
