@@ -497,6 +497,34 @@ class ExtensionManager(Generic[TApp]):
         extension_data = self._extension_data.get(extension_name)
         return deepcopy(extension_data.configuration) if extension_data else {}
 
+    def get_configuration_snapshot_dict(
+        self, disable_unloaded: bool = False
+    ) -> Dict[str, ExtensionConfiguration]:
+        """Returns a dictionary mapping extension names to snapshots of the
+        configurations of the given extensions.
+
+        The snapshot is a deep copy of the configuration object of the
+        extension; you may freely modify it without affecting the extension
+        even if it is loaded.
+
+        Parameters:
+            disable_unloaded: whether to mark currently unloaded extensions as
+                disabled
+
+        Returns:
+            a dictionary mapping extension names to deep copies of the
+            configuration objects
+        """
+        result = {
+            name: self.get_configuration_snapshot(name)
+            for name in self.known_extensions
+        }
+        if disable_unloaded:
+            for name, config in result.items():
+                if not self.is_loaded(name):
+                    config["enabled"] = False
+        return result
+
     def get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
         """Determines the list of extensions that a given extension depends
         on directly.
