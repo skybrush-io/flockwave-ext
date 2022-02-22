@@ -682,12 +682,16 @@ class ExtensionManager(Generic[TApp]):
     async def load(self, extension_name: str) -> None:
         """Loads an extension with the given name.
 
-        The extension will be imported from the root extension package
-        specified at construction time, or ``flockwave.ext`` if it was not
-        specified. When the module contains a callable named ``construct()``,
-        it will be called to construct a new instance of the extension.
-        Otherwise, the entire module is assumed to be the extension
-        instance.
+        The extension name will be resolved to the extension itself using the
+        extension discovery mechanism that is configured in the module finder
+        associated to the extension manager; see the `module_finder` property
+        and the `ExtensionModuleFinder` class for more details. Typically, the
+        module finder resolves an extension name to a Python module using
+        Python package entry points or by looking them up in a designated
+        namespace package (e.g., ``flockwave.ext``). When the module contains a
+        callable named ``construct()``, it will be called to construct a new
+        instance of the extension. Otherwise, the entire module is assumed to be
+        the extension instance.
 
         Extension instances should have methods named ``load()`` and
         ``unload()``; these methods will be called when the extension
