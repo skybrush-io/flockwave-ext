@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "flockwave-ext"
-version = "1.11.0"
+version = "1.12.0"
 description = "Generic extension manager for Skybrush-related projects"
 authors = ["Tamas Nepusz <tamas@collmot.com>"]
 packages = [
