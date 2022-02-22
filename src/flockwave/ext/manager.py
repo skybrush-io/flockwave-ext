@@ -659,6 +659,54 @@ class ExtensionManager(Generic[TApp]):
 
         return reverse_dependencies
 
+    def get_tags_of_extension(self, extension_name: str) -> Set[str]:
+        """Returns the list of tags associated to the extension with the given
+        name.
+
+        Tags are primarily used to mark extensions as experimental or deprecated,
+        or to organize them into categories.
+
+        An extension may provide tags by defining a `get_tags` attribute (which
+        must be a function that can be called with no arguments) or a `tags`
+        attribute (which must be an iterable of strings). In the absence of
+        these attributes, the extension is assumed to have no tags.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the tags of the extension
+        """
+        try:
+            module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            base_log.warning(f"No such extension: {extension_name}")
+            return set()
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            raise
+
+        func = getattr(module, "get_tags", None)
+        if callable(func):
+            try:
+                tags = func()
+            except Exception:
+                base_log.exception(
+                    "Error while getting the tags of extension {0!r}".format(
+                        extension_name
+                    )
+                )
+                tags = ()
+        else:
+            tags = getattr(module, "tags", None) or ()
+
+        if isinstance(tags, str):
+            return set(tags.split())
+        else:
+            return set(str(tag) for tag in tags)
+
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.
 
@@ -691,6 +739,22 @@ class ExtensionManager(Generic[TApp]):
         if proxy is None:
             raise RuntimeError("Extension {extension_name} does not have an API")
         return proxy
+
+    def is_experimental(self, extension_name: str) -> bool:
+        """Returns whether the extension with the given name is experimental.
+
+        An extension is experimental if it is tagged with ``"experimental"``.
+        See `get_tags_of_extension()` for more details.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            whether the extension is experimental. Non-existent extensions are
+            not considered experimental.
+        """
+        tags = self.get_tags_of_extension(extension_name)
+        return "experimental" in tags
 
     @property
     def known_extensions(self) -> List[str]:
