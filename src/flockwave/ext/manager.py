@@ -47,6 +47,8 @@ ExtensionConfigurationSchema = Dict[str, Any]
 
 @dataclass
 class Node(Generic[T]):
+    """Single node in a linked list, used by MRUContainer_."""
+
     next: "Node[T]" = field(init=False)
     prev: "Node[T]" = field(init=False)
     data: Optional[T] = None
@@ -55,65 +57,87 @@ class Node(Generic[T]):
         self.next = self.prev = self
 
 
-class LoadOrder(Generic[T]):
-    """Helper object that maintains the order in which extensions were loaded
-    so we can unload them in reverse order.
+class MRUContainer(Generic[T]):
+    """Container for arbitrary objects that records the order in which the
+    items were added, moving recently added items to the end of the container.
+
+    Whenever a new item is added to the container, the new item is added to
+    the end of the container. If the item is already in the container, it is
+    moved to the end of the container instead of adding another instance.
     """
 
     _guard: Node[T]
+    """Guard node at the front of the linked list."""
+
     _tail: Node[T]
+    """The tail of the linked list for backward traversal."""
+
     _dict: Dict[T, Node[T]]
+    """Dictionary mapping objects to the corresponding linked list nodes."""
 
     def __init__(self):
+        """Constructor."""
         self._guard = self._tail = Node()
         self._dict = {}
 
+    def __contains__(self, item: T) -> bool:
+        """Returns whether the given item is in the container."""
+        return item in self._dict
+
     def items(self) -> Iterable[T]:
-        item = self._guard
-        item = item.next
-        while item is not self._guard:
-            assert item.data is not None
-            yield item.data
-            item = item.next
+        """Iterator that yields the items of the container in the order they
+        were added.
+        """
+        node = self._guard
+        node = node.next
+        while node is not self._guard:
+            assert node.data is not None
+            yield node.data
+            node = node.next
 
-    def notify_loaded(self, name: T) -> None:
-        """Notifies the object that the given extension was loaded."""
-        assert name is not None
+    def append(self, item: T) -> None:
+        """Adds the given object to the end of the container.
 
-        item = self._dict.get(name)
-        if not item:
-            item = self._dict[name] = Node(name)
+        If the object is already in the container, it is moved to the end of
+        the container.
+        """
+        assert item is not None
+
+        node = self._dict.get(item)
+        if not node:
+            node = self._dict[item] = Node(item)
         else:
-            self._unlink_item(item)
+            self._unlink_node(node)
 
-        item.prev = self._tail
-        item.next = self._guard
+        node.prev = self._tail
+        node.next = self._guard
 
-        self._tail.next = item
-        self._tail = item
+        self._tail.next = node
+        self._tail = node
 
-    def notify_unloaded(self, name: T) -> None:
-        """Notifies the object that the given extension was unloaded."""
-        item = self._dict.pop(name, None)
-        if item:
-            return self._unlink_item(item)
+    def remove(self, item: T) -> None:
+        """Removes the given object from the container."""
+        node = self._dict.pop(item, None)
+        if node:
+            return self._unlink_node(node)
 
     def reversed(self) -> Iterable[T]:
-        """Returns a generator that generates items in reversed order compared
-        to how they were added.
-        """
-        item = self._tail
-        while item is not self._guard:
-            assert item.data is not None
-            yield item.data
-            item = item.prev
+        """Iterator that yields the items of the container in reverse order."""
+        node = self._tail
+        while node is not self._guard:
+            assert node.data is not None
+            yield node.data
+            node = node.prev
 
-    def _unlink_item(self, item: Node[T]) -> None:
-        if self._tail is item:
-            self._tail = item.prev
+    def _unlink_node(self, node: Node[T]) -> None:
+        if self._tail is node:
+            self._tail = node.prev
 
-        item.prev.next = item.next
-        item.next.prev = item.prev
+        node.prev.next = node.next
+        node.next.prev = node.prev
+
+        node.prev = node
+        node.next = node
 
 
 @dataclass
@@ -236,7 +260,7 @@ class ExtensionManager(Generic[TApp]):
     _extension_data: keydefaultdict[str, ExtensionData]
     """Dictionary mapping extension names to their associated data object."""
 
-    _load_order: LoadOrder[str]
+    _load_order: MRUContainer[str]
     """Order in which the extensions were loaded."""
 
     _spinning: bool
@@ -270,7 +294,7 @@ class ExtensionManager(Generic[TApp]):
         self._app = None
 
         self._extension_data = keydefaultdict(self._create_extension_data)
-        self._load_order = LoadOrder()
+        self._load_order = MRUContainer()
         self._spinning = False
 
     @property
@@ -906,7 +930,7 @@ class ExtensionManager(Generic[TApp]):
 
         extension_data.instance = extension
         extension_data.loaded = True
-        self._load_order.notify_loaded(extension_name)
+        self._load_order.append(extension_name)
 
         for dependency in self.get_dependencies_of_extension(extension_name):
             self._extension_data[dependency].dependents.add(extension_name)
@@ -1082,7 +1106,7 @@ class ExtensionManager(Generic[TApp]):
         extension_data.instance = None
 
         # Remove the extension from its dependents
-        self._load_order.notify_unloaded(extension_name)
+        self._load_order.remove(extension_name)
 
         for dependency in self.get_dependencies_of_extension(extension_name):
             self._extension_data[dependency].dependents.remove(extension_name)
