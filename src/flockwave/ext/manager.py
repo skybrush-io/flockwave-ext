@@ -91,9 +91,9 @@ class MRUContainer(Generic[T]):
         node = self._guard
         node = node.next
         while node is not self._guard:
-            assert node.data is not None
-            yield node.data
-            node = node.next
+            node, data = node.next, node.data
+            assert data is not None
+            yield data
 
     def append(self, item: T) -> None:
         """Adds the given object to the end of the container.
@@ -125,9 +125,9 @@ class MRUContainer(Generic[T]):
         """Iterator that yields the items of the container in reverse order."""
         node = self._tail
         while node is not self._guard:
-            assert node.data is not None
-            yield node.data
-            node = node.prev
+            node, data = node.prev, node.data
+            assert data is not None
+            yield data
 
     def _unlink_node(self, node: Node[T]) -> None:
         if self._tail is node:
@@ -737,7 +737,7 @@ class ExtensionManager(Generic[TApp]):
         Returns:
             whatever the `load()` function of the extension returns
         """
-        return await self._load(extension_name, forbidden=[])
+        return await self._load(extension_name, forbidden=[], history=[])
 
     @property
     def loaded_extensions(self) -> List[str]:
@@ -856,15 +856,32 @@ class ExtensionManager(Generic[TApp]):
         Parameters:
             extension_name: the name of the extension to unload
         """
-        return await self._unload(extension_name, forbidden=[])
+        return await self._unload(extension_name, forbidden=[], history=[])
 
-    async def _load(self, extension_name: str, forbidden: List[str]):
+    async def _load(
+        self, extension_name: str, forbidden: List[str], history: List[str]
+    ):
+        """Loads an extension with the given name, ensuring that all its
+        dependencies are loaded before the extension itself.
+
+        This function is internal; use `load()` instead if you want to load
+        an extension programmatically, and it will take care of loading all
+        the dependencies as well.
+
+        Parameters:
+            extension_name: the name of the extension to load
+            forbidden: list of extensions that are _currently_ being loaded,
+                used to detect dependency cycles
+            history: list that is used to record which extensions were loaded
+                successfully
+        """
         if not self._ensure_no_cycle(forbidden, extension_name):
             return
 
-        await self._ensure_dependencies_loaded(extension_name, forbidden)
+        await self._ensure_dependencies_loaded(extension_name, forbidden, history)
         if not self.is_loaded(extension_name):
-            return await self._load_single_extension(extension_name)
+            await self._load_single_extension(extension_name)
+            history.append(extension_name)
 
     async def _load_single_extension(self, extension_name: str):
         """Loads an extension with the given name, assuming that all its
@@ -1047,13 +1064,32 @@ class ExtensionManager(Generic[TApp]):
         elif task is not None:
             log.warn("worker() must be an async function")
 
-    async def _unload(self, extension_name: str, forbidden: List[str]) -> None:
+    async def _unload(
+        self, extension_name: str, forbidden: List[str], history: List[str]
+    ) -> None:
+        """Unloads an extension with the given name, ensuring that all its
+        reverse dependencies are unloaded before the extension itself.
+
+        This function is internal; use `unload()` instead if you want to unload
+        an extension programmatically, and it will take care of unloading all
+        the reverse dependencies as well.
+
+        Parameters:
+            extension_name: the name of the extension to unload
+            forbidden: list of extensions that are _currently_ being unloaded,
+                used to detect dependency cycles
+            history: list that is used to record which extensions were unloaded
+                successfully
+        """
         if not self._ensure_no_cycle(forbidden, extension_name):
             return
 
-        await self._ensure_reverse_dependencies_unloaded(extension_name, forbidden)
+        await self._ensure_reverse_dependencies_unloaded(
+            extension_name, forbidden, history
+        )
         if self.is_loaded(extension_name):
-            return await self._unload_single_extension(extension_name)
+            await self._unload_single_extension(extension_name)
+            history.append(extension_name)
 
     async def _unload_single_extension(self, extension_name: str) -> None:
         log = add_id_to_log(base_log, id=extension_name)
@@ -1124,7 +1160,7 @@ class ExtensionManager(Generic[TApp]):
             log.warning("Unloaded extension")
 
     async def _ensure_dependencies_loaded(
-        self, extension_name: str, forbidden: List[str]
+        self, extension_name: str, forbidden: List[str], history: List[str]
     ) -> None:
         """Ensures that all the dependencies of the given extension are
         loaded.
@@ -1134,7 +1170,10 @@ class ExtensionManager(Generic[TApp]):
 
         Parameters:
             extension_name: the name of the extension
-            forbidden: set of extensions that are already being loaded
+            forbidden: list of extensions that are _currently_ being loaded,
+                used to detect dependency cycles
+            history: list that is used to record which extensions were loaded
+                successfully
 
         Raises:
             ImportError: if an extension cannot be imported
@@ -1143,12 +1182,12 @@ class ExtensionManager(Generic[TApp]):
         forbidden.append(extension_name)
         try:
             for dependency in dependencies:
-                await self._load(dependency, forbidden)
+                await self._load(dependency, forbidden, history)
         finally:
             forbidden.pop()
 
     async def _ensure_reverse_dependencies_unloaded(
-        self, extension_name: str, forbidden: List[str]
+        self, extension_name: str, forbidden: List[str], history: List[str]
     ) -> None:
         """Ensures that all the dependencies of the given extension are
         unloaded.
@@ -1158,7 +1197,10 @@ class ExtensionManager(Generic[TApp]):
 
         Parameters:
             extension_name: the name of the extension
-            forbidden: set of extensions that are already being unloaded
+            forbidden: list of extensions that are _currently_ being loaded,
+                used to detect dependency cycles
+            history: list that is used to record which extensions were loaded
+                successfully
 
         Raises:
             ImportError: if an extension cannot be imported
@@ -1167,7 +1209,7 @@ class ExtensionManager(Generic[TApp]):
         forbidden.append(extension_name)
         try:
             for dependency in dependencies:
-                await self._unload(dependency, forbidden)
+                await self._unload(dependency, forbidden, history)
         finally:
             forbidden.pop()
 
