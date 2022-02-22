@@ -12,15 +12,61 @@ from typing import (
     overload,
 )
 
-from trio import MultiError
+from trio import CancelScope, Event, MultiError
 
-__all__ = ("bind", "cancellable", "keydefaultdict", "protected")
+__all__ = ("AwaitableCancelScope", "bind", "cancellable", "keydefaultdict", "protected")
 
 
 K = TypeVar("K")
 V = TypeVar("V")
 T = TypeVar("T")
 T2 = TypeVar("T2")
+
+
+class AwaitableCancelScope:
+    """Wrapper for a Trio cancel scope that allows waiting until the cancellation
+    has been processed.
+
+    This object wraps a cancel scope and an event. Unlike in a Trio cancel
+    scope, `cancel()` is an async operation that calls `cancel()` in the wrapped
+    cancel scope and then waits for the event. The task that the cancel scope
+    cancels is expected to trigger the event when it is about to terminate.
+    """
+
+    _wrapped_cancel_scope: CancelScope
+    """The native Trio cancel scope wrapped by this instance."""
+
+    _event: Event
+    """The event that must be set by the associated task when the cancellation
+    was processed.
+    """
+
+    def __init__(self):
+        self._wrapped_cancel_scope = CancelScope()
+        self._event = Event()
+
+    async def cancel(self) -> None:
+        """Cancels the cancel scope and waits for the cancellation to be
+        processed by the associated task.
+        """
+        self.cancel_nowait()
+        await self._event.wait()
+
+    def cancel_nowait(self) -> None:
+        """Cancels the cancel scope and returns immediately, without waiting
+        for the cancellation to be processed by the associated task.
+        """
+        self._wrapped_cancel_scope.cancel()
+
+    def notify_processed(self) -> None:
+        """Notifies the cancel scope that the cancellation has been processed."""
+        self._event.set()
+
+    def __enter__(self):
+        return self._wrapped_cancel_scope.__enter__()
+
+    def __exit__(self, exc_type, exc_value, tb):
+        return self._wrapped_cancel_scope.__exit__(exc_type, exc_value, tb)
 
 
 def bind(func, args=None, kwds=None, *, partial=False):
@@ -62,9 +108,12 @@ def cancellable(func):
     """
 
     @wraps(func)
-    async def decorated(*args, cancel_scope, **kwds):
-        with cancel_scope:
-            return await func(*args, **kwds)
+    async def decorated(*args, cancel_scope: AwaitableCancelScope, **kwds):
+        try:
+            with cancel_scope:
+                return await func(*args, **kwds)
+        finally:
+            cancel_scope.notify_processed()
 
     decorated._cancellable = True
 

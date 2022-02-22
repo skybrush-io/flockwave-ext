@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from inspect import iscoroutinefunction
-from trio import CancelScope, open_memory_channel, open_nursery, TASK_STATUS_IGNORED
+from trio import open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
 from types import ModuleType
 from typing import (
@@ -29,7 +29,7 @@ from flockwave.logger import add_id_to_log, log as base_log, Logger
 from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
 from .errors import ApplicationExit, NoSuchExtension
-from .utils import bind, cancellable, keydefaultdict, protected
+from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
 
@@ -176,12 +176,12 @@ class ExtensionData:
     activated when the extension is loaded the next time.
     """
 
-    task: Optional[CancelScope] = None
+    task: Optional[AwaitableCancelScope] = None
     """A cancellation scope for the background task that was spawned for the
     extension when it was loaded, or `None` if no such task was spawned.
     """
 
-    worker: Optional[CancelScope] = None
+    worker: Optional[AwaitableCancelScope] = None
     """A cancellation scope for the worker task that was spawned for the
     extension when the first client connected to the server, or ``None`` if no
     such worker was spawned or there are no clients connected.
@@ -270,7 +270,9 @@ class ExtensionManager(Generic[TApp]):
 
     _task_queue: Optional[
         SendChannel[
-            Tuple[Callable[..., Any], Any, Optional[CancelScope], Optional[str]]
+            Tuple[
+                Callable[..., Any], Any, Optional[AwaitableCancelScope], Optional[str]
+            ]
         ]
     ]
     """Queue containing background tasks to be spawned and their associated names
@@ -765,6 +767,16 @@ class ExtensionManager(Generic[TApp]):
         extension_data = self._extension_data.get(extension_name)
         return extension_data.needs_restart if extension_data else False
 
+    async def reload(self, extension_name: str) -> None:
+        """Reloads the extension with the given name, taking care of unloading
+        its reverse dependencies first and loading them again after the
+        extension itself was reloaded.
+        """
+        history = []
+        await self._unload(extension_name, forbidden=[], history=history)
+        for dep in reversed(history):
+            await self.load(dep)
+
     async def run(
         self,
         *,
@@ -803,7 +815,7 @@ class ExtensionManager(Generic[TApp]):
         *args,
         name: Optional[str] = None,
         cancellable: bool = False,
-    ) -> Optional[CancelScope]:
+    ) -> Optional[AwaitableCancelScope]:
         """Runs the given function as a background task in the extension
         manager.
 
@@ -811,7 +823,11 @@ class ExtensionManager(Generic[TApp]):
         """
         assert self._task_queue is not None
 
-        scope = CancelScope() if cancellable or hasattr(func, "_cancellable") else None
+        scope = (
+            AwaitableCancelScope()
+            if cancellable or hasattr(func, "_cancellable")
+            else None
+        )
         await self._task_queue.send((func, args, scope, name))
         return scope
 
@@ -1015,10 +1031,10 @@ class ExtensionManager(Generic[TApp]):
         log = add_id_to_log(base_log, id=extension_name)
 
         # Stop the worker associated to the extension if it has one
-        if extension_data.worker:
-            # TODO(ntamas): wait until the worker is cancelled
-            extension_data.worker.cancel()
+        worker = extension_data.worker
+        if worker:
             extension_data.worker = None
+            await worker.cancel()
 
         # Call the spindown hook of the extension if it has one
         func = getattr(extension, "spindown", None)
@@ -1116,10 +1132,10 @@ class ExtensionManager(Generic[TApp]):
             await self._spindown_extension(extension_name)
 
         # Stop the task associated to the extension if it has one
-        if extension_data.task:
-            # TODO(ntamas): wait until the task is cancelled
-            extension_data.task.cancel()
+        task = extension_data.task
+        if task:
             extension_data.task = None
+            await task.cancel()
 
         # Unload the extension
         clean_unload = True
