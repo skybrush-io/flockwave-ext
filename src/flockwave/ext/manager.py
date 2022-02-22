@@ -1117,9 +1117,11 @@ class ExtensionManager(Generic[TApp]):
         """
         dependencies = self.get_dependencies_of_extension(extension_name)
         forbidden.append(extension_name)
-        for dependency in dependencies:
-            await self._load(dependency, forbidden)
-        forbidden.pop()
+        try:
+            for dependency in dependencies:
+                await self._load(dependency, forbidden)
+        finally:
+            forbidden.pop()
 
     async def _ensure_reverse_dependencies_unloaded(
         self, extension_name: str, forbidden: List[str]
@@ -1139,9 +1141,11 @@ class ExtensionManager(Generic[TApp]):
         """
         dependencies = self.get_reverse_dependencies_of_extension(extension_name)
         forbidden.append(extension_name)
-        for dependency in dependencies:
-            await self._unload(dependency, forbidden)
-        forbidden.pop()
+        try:
+            for dependency in dependencies:
+                await self._unload(dependency, forbidden)
+        finally:
+            forbidden.pop()
 
     @staticmethod
     def _ensure_no_cycle(forbidden: List[str], extension_name: str) -> bool:
