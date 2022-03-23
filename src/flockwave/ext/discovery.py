@@ -5,16 +5,43 @@ managed by an extension manager.
 from importlib import import_module
 from pkgutil import get_loader
 from types import ModuleType
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, Iterator, List
 
-# This can be replaced with importlib.metadata when we drop support for
-# Python <3.10 because the selectable interface was added in Python 3.10
-from importlib_metadata import entry_points
+try:
+    from importlib.metadata import entry_points, EntryPoint
+except ImportError:
+    # Python 3.7 uses the backported importlib_metadata library
+    from importlib_metadata import entry_points, EntryPoint
 
 from .errors import NoSuchExtension
 
 
 __all__ = ("ExtensionModuleFinder",)
+
+
+def _iter_entry_points_in_group(group: str) -> Iterator[EntryPoint]:
+    """Finds all PyPA entry points with the given group, in a manner that works
+    from Python 3.7 onwards.
+
+    Returns:
+        an iterator yielding the matching entry points
+    """
+    # The remaining part is a bit of a mess. Ultimately, we are looking for
+    # entry points whose group matches any of the groups in
+    # self._entry_point_groups. For Python<3.8, we are using
+    # importlib_metadata, which provides a "selectable" version of
+    # entry_points so we can call entry_points(group=x) to get all the
+    # entry points matching group x. For Python>=3.10, Python itself provides
+    # entry_points() natively and it supports this syntax. For Python>=3.8,
+    # Python provides entry_points() in importlib.metadata but it does not
+    # understand the selectable syntax so we need another branch for that.
+    try:
+        return iter(entry_points(group=group))
+    except TypeError:
+        try:
+            return iter(entry_points()[group])
+        except KeyError:
+            return iter(())
 
 
 class ExtensionModuleFinder:
@@ -141,6 +168,15 @@ class ExtensionModuleFinder:
         for package_root in self._package_roots:
             yield f"{package_root}.{name}"
 
+        # The remaining part is a bit of a mess. Ultimately, we are looking for
+        # entry points whose group matches any of the groups in
+        # self._entry_point_groups. For Python<3.8, we are using
+        # importlib_metadata, which provides a "selectable" version of
+        # entry_points so we can call entry_points(group=x) to get all the
+        # entry points matching group x. For Python>=3.10, Python itself provides
+        # entry_points() natively and it supports this syntax. For Python>=3.8,
+        # Python provides entry_points() in importlib.metadata but it does not
+        # understand the selectable syntax so we need another branch for that.
         for entry_point_group in self._entry_point_groups:
-            for entry_point in entry_points(group=entry_point_group):
-                yield entry_point.value
+            for entry_point in _iter_entry_points_in_group(entry_point_group):
+                yield entry_point.value  # type: ignore

@@ -112,9 +112,10 @@ class ExtensionBase(Generic[TApp]):
         try:
             await func(*args)
         except Exception:
-            self.log.exception(
-                f"Unexpected exception caught from background task {func.__name__}"
-            )
+            if self.log:
+                self.log.exception(
+                    f"Unexpected exception caught from background task {func.__name__}"
+                )
 
     def spindown(self) -> None:
         """Handler that is called by the extension manager when the
