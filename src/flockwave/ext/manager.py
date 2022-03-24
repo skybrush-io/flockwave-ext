@@ -263,6 +263,9 @@ class ExtensionManager(Generic[TApp]):
     _load_order: MRUContainer[str]
     """Order in which the extensions were loaded."""
 
+    _shutting_down: bool
+    """Whether the extension manager is shutting down."""
+
     _spinning: bool
     """Whether the extension manager is "spinning". See the documentation of
     the `spinning` property for more details.
@@ -896,6 +899,14 @@ class ExtensionManager(Generic[TApp]):
         return scope
 
     @property
+    def shutting_down(self) -> bool:
+        """Whether the extension manager is currently shutting down. Can be used
+        by essential extensions that are not supposed to be unloaded to detect
+        that the entire extension manager is shutting down and act accordingly.
+        """
+        return self._shutting_down
+
+    @property
     def spinning(self) -> bool:
         """Whether the extensions in the extension manager are "spinning".
 
@@ -927,8 +938,12 @@ class ExtensionManager(Generic[TApp]):
 
     async def teardown(self) -> None:
         """Tears down the extension manager and prepares it for destruction."""
-        for ext_name in self._load_order.reversed():
-            await self.unload(ext_name)
+        self._shutting_down = True
+        try:
+            for ext_name in self._load_order.reversed():
+                await self.unload(ext_name)
+        finally:
+            self._shutting_down = False
 
     async def unload(self, extension_name: str) -> None:
         """Unloads the extension with the given name.
@@ -1215,11 +1230,13 @@ class ExtensionManager(Generic[TApp]):
                 raise
             except NotSupportedError:
                 # Re-raise the exception with a standard message, hiding the
-                # origin where it came from
-                log.error("This extension cannot be unloaded")
-                raise NotSupportedError(
-                    f"Extension {extension_name} cannot be unloaded"
-                ) from None
+                # origin where it came from. When the entire extension manager
+                # is shutting down, ignore the failure and force-unload
+                if not self.shutting_down:
+                    log.error("This extension cannot be unloaded")
+                    raise NotSupportedError(
+                        f"Extension {extension_name} cannot be unloaded"
+                    ) from None
             except Exception:
                 clean_unload = False
                 log.exception("Error while unloading extension; forcing unload")
