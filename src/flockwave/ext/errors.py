@@ -1,4 +1,4 @@
-__all__ = ("ExtensionError", "ApplicationExit", "NoSuchExtension")
+__all__ = ("ExtensionError", "ApplicationExit", "NoSuchExtension", "NotSupportedError")
 
 
 class ExtensionError(RuntimeError):
@@ -18,6 +18,14 @@ class ApplicationExit(ExtensionError):
 class NoSuchExtension(ExtensionError):
     """Error thrown by the extension module finder when there is no extension
     module for a given extension name.
+    """
+
+    pass
+
+
+class NotSupportedError(ExtensionError):
+    """Special exception that can be thrown from the `unload()` method of an
+    extension to indicate that the extension is essential and cannot be unloaded.
     """
 
     pass

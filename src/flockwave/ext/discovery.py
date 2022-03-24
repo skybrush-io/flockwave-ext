@@ -11,7 +11,7 @@ try:
     from importlib.metadata import entry_points, EntryPoint
 except ImportError:
     # Python 3.7 uses the backported importlib_metadata library
-    from importlib_metadata import entry_points, EntryPoint
+    from importlib_metadata import entry_points, EntryPoint  # type: ignore
 
 from .errors import NoSuchExtension
 

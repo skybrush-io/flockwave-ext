@@ -28,7 +28,7 @@ from flockwave.logger import add_id_to_log, log as base_log, Logger
 
 from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
-from .errors import ApplicationExit, NoSuchExtension
+from .errors import ApplicationExit, NoSuchExtension, NotSupportedError
 from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
@@ -1213,6 +1213,13 @@ class ExtensionManager(Generic[TApp]):
             except ApplicationExit:
                 # Let this exception propagate
                 raise
+            except NotSupportedError:
+                # Re-raise the exception with a standard message, hiding the
+                # origin where it came from
+                log.error("This extension cannot be unloaded")
+                raise NotSupportedError(
+                    f"Extension {extension_name} cannot be unloaded"
+                ) from None
             except Exception:
                 clean_unload = False
                 log.exception("Error while unloading extension; forcing unload")
@@ -1325,9 +1332,9 @@ class ExtensionAPIProxy:
         """
         self._extension_name = extension_name
         self._manager = manager
-        self._manager.loaded.connect(self._on_extension_loaded, sender=self._manager)
+        self._manager.loaded.connect(self._on_extension_loaded, sender=self._manager)  # type: ignore
         self._manager.unloaded.connect(
-            self._on_extension_unloaded, sender=self._manager
+            self._on_extension_unloaded, sender=self._manager  # type: ignore
         )
 
         loaded = self._manager.is_loaded(extension_name)
