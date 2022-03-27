@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from inspect import iscoroutinefunction
+from logging import Logger, getLogger
 from trio import open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
 from types import ModuleType
@@ -24,8 +25,6 @@ from typing import (
     TypeVar,
 )
 
-from flockwave.logger import add_id_to_log, log as base_log, Logger
-
 from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
 from .errors import ApplicationExit, NoSuchExtension, NotSupportedError
@@ -34,7 +33,7 @@ from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, prot
 __all__ = ("ExtensionManager",)
 
 EXT_PACKAGE_NAME = __name__.rpartition(".")[0]
-base_log = base_log.getChild("manager")
+base_log = getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -992,19 +991,20 @@ class ExtensionManager(Generic[TApp]):
         if extension_name in ("logger", "manager", "base", "__init__"):
             raise ValueError("invalid extension name: {0!r}".format(extension_name))
 
-        log = add_id_to_log(base_log, id=extension_name)
+        log = base_log
+        extra = {"id": extension_name}
 
         extension_data = self._extension_data[extension_name]
         configuration = extension_data.commit_configuration_changes()
 
-        log.debug("Loading extension")
+        log.debug("Loading extension", extra=extra)
         try:
             module = self._get_module_for_extension(extension_name)
         except NoSuchExtension:
-            log.error(f"No such extension: {extension_name}")
+            log.error(f"No such extension: {extension_name}", extra=extra)
             return None
         except ImportError:
-            log.exception("Error while importing extension")
+            log.exception("Error while importing extension", extra=extra)
             return None
 
         instance_factory = getattr(module, "construct", None)
@@ -1012,7 +1012,7 @@ class ExtensionManager(Generic[TApp]):
         try:
             extension = instance_factory() if instance_factory else module
         except Exception:
-            log.exception("Error while instantiating extension")
+            log.exception("Error while instantiating extension", extra=extra)
             return None
 
         args = (self.app, configuration, extension_data.log)
@@ -1025,7 +1025,7 @@ class ExtensionManager(Generic[TApp]):
                 # Let this exception propagate
                 raise
             except Exception:
-                log.exception("Error while loading extension")
+                log.exception("Error while loading extension", extra=extra)
                 return None
         else:
             result = None
@@ -1038,7 +1038,7 @@ class ExtensionManager(Generic[TApp]):
                 name=f"extension:{extension_name}/run",
             )
         elif task is not None:
-            log.warn("run() must be an async function")
+            log.warn("run() must be an async function", extra=extra)
 
         extension_data.instance = extension
         extension_data.loaded = True
@@ -1107,8 +1107,6 @@ class ExtensionManager(Generic[TApp]):
         extension = self._get_loaded_extension_by_name(extension_name)
         extension_data = self._extension_data[extension_name]
 
-        log = add_id_to_log(base_log, id=extension_name)
-
         # Stop the worker associated to the extension if it has one
         worker = extension_data.worker
         if worker:
@@ -1121,7 +1119,9 @@ class ExtensionManager(Generic[TApp]):
             try:
                 func()
             except Exception:
-                log.exception("Error while spinning down extension")
+                base_log.exception(
+                    "Error while spinning down extension", extra={"id": extension_name}
+                )
                 return
 
     async def _spinup_extension(self, extension_name: str) -> None:
@@ -1136,15 +1136,15 @@ class ExtensionManager(Generic[TApp]):
         extension = self._get_loaded_extension_by_name(extension_name)
         extension_data = self._extension_data[extension_name]
 
-        log = add_id_to_log(base_log, id=extension_name)
-
         # Call the spinup hook of the extension if it has one
         func = getattr(extension, "spinup", None)
         if callable(func):
             try:
                 func()
             except Exception:
-                log.exception("Error while spinning up extension")
+                base_log.exception(
+                    "Error while spinning up extension", extra={"id": extension_name}
+                )
                 return
 
         # Start the worker associated to the extension if it has one
@@ -1157,7 +1157,9 @@ class ExtensionManager(Generic[TApp]):
                 name=f"extension:{extension_name}/worker",
             )
         elif task is not None:
-            log.warn("worker() must be an async function")
+            base_log.warn(
+                "worker() must be an async function", extra={"id": extension_name}
+            )
 
     async def _unload(
         self, extension_name: str, forbidden: List[str], history: List[str]
@@ -1187,13 +1189,14 @@ class ExtensionManager(Generic[TApp]):
             history.append(extension_name)
 
     async def _unload_single_extension(self, extension_name: str) -> None:
-        log = add_id_to_log(base_log, id=extension_name)
+        log = base_log
+        extra = {"id": extension_name}
 
         # Get the extension instance
         try:
             extension = self._get_loaded_extension_by_name(extension_name)
         except KeyError:
-            log.warning("Tried to unload extension but it is not loaded")
+            log.warning("Tried to unload extension but it is not loaded", extra=extra)
             return
 
         # Get the associated internal bookkeeping object of the extension
@@ -1233,13 +1236,15 @@ class ExtensionManager(Generic[TApp]):
                 # origin where it came from. When the entire extension manager
                 # is shutting down, ignore the failure and force-unload
                 if not self.shutting_down:
-                    log.error("This extension cannot be unloaded")
+                    log.error("This extension cannot be unloaded", extra=extra)
                     raise NotSupportedError(
                         f"Extension {extension_name} cannot be unloaded"
                     ) from None
             except Exception:
                 clean_unload = False
-                log.exception("Error while unloading extension; forcing unload")
+                log.exception(
+                    "Error while unloading extension; forcing unload", extra=extra
+                )
 
         # Update the internal bookkeeping object
         extension_data.loaded = False
@@ -1259,9 +1264,9 @@ class ExtensionManager(Generic[TApp]):
 
         # Add a log message
         if clean_unload:
-            log.debug("Unloaded extension")
+            log.debug("Unloaded extension", extra=extra)
         else:
-            log.warning("Unloaded extension")
+            log.warning("Unloaded extension", extra=extra)
 
     async def _ensure_dependencies_loaded(
         self, extension_name: str, forbidden: List[str], history: List[str]
