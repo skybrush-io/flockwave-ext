@@ -22,6 +22,12 @@ pytest-cov = "^3.0.0"
 [[tool.poetry.source]]
 name = "collmot"
 url = "https://pypi.collmot.com/simple/"
+secondary = true
+
+[[tool.poetry.source]]
+name = "fury"
+url = "https://pypi.fury.io/skybrush/"
+secondary = true
 
 [tool.coverage.paths]
 source = ["src"]
