@@ -179,4 +179,5 @@ class ExtensionModuleFinder:
         # understand the selectable syntax so we need another branch for that.
         for entry_point_group in self._entry_point_groups:
             for entry_point in _iter_entry_points_in_group(entry_point_group):
-                yield entry_point.value  # type: ignore
+                if entry_point.name == name:
+                    yield entry_point.value  # type: ignore
