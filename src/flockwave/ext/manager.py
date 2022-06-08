@@ -897,6 +897,19 @@ class ExtensionManager(Generic[TApp]):
         await self._task_queue.send((func, args, scope, name))
         return scope
 
+    def rescan(self) -> None:
+        """Refreshes the list of extensions known to the extension manager by
+        scanning all registered entry points in the extension module finder.
+        """
+        for name in self.module_finder.iter_extension_names():
+            try:
+                # Trigger the creation of an entry for this extension
+                self._extension_data[name]
+            except Exception:
+                # doesn't matter; probably it is not an extension or the
+                # extension bailed out during import
+                pass
+
     @property
     def shutting_down(self) -> bool:
         """Whether the extension manager is currently shutting down. Can be used

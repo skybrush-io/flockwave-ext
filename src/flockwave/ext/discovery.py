@@ -155,6 +155,17 @@ class ExtensionModuleFinder:
             self._module_name_cache[name] = result
         return result
 
+    def iter_extension_names(self) -> Iterable[str]:
+        """Iterator that yields possible extension names from the registered
+        entry point groups.
+
+        Note that package roots are not scanned yet as it is not possible to
+        find all sub-modules of a given Python package in an efficient manner.
+        """
+        for entry_point_group in self._entry_point_groups:
+            for entry_point in _iter_entry_points_in_group(entry_point_group):
+                yield entry_point.name
+
     def _iter_module_name_candidates_for_extension(self, name: str) -> Iterable[str]:
         """Iterator that yields possible module names for an extension name,
         given the currently registered namespace packages and entry point
