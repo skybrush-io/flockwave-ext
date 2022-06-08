@@ -1,4 +1,4 @@
 """Version information for the Flockwave extension manager package."""
 
-__version_info__ = (1, 14, 4)
+__version_info__ = (1, 15, 0)
 __version__ = ".".join("{0}".format(i) for i in __version_info__)
