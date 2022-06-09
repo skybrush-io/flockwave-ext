@@ -27,7 +27,12 @@ from typing import (
 
 from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
-from .errors import ApplicationExit, NoSuchExtension, NotSupportedError
+from .errors import (
+    ApplicationExit,
+    NoSuchExtension,
+    NotLoadableError,
+    NotSupportedError,
+)
 from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
@@ -1034,6 +1039,15 @@ class ExtensionManager(Generic[TApp]):
         if callable(func):
             try:
                 result = bind(func, args, partial=True)()
+            except NotLoadableError as ex:
+                # Log the exception with a standard message, hiding the origin
+                # where it came from
+                message = str(ex)
+                if message:
+                    log.error(f"Extension cannot be loaded. {message}", extra=extra)
+                else:
+                    log.error("Extension cannot be loaded", extra=extra)
+                return None
             except ApplicationExit:
                 # Let this exception propagate
                 raise
@@ -1073,9 +1087,20 @@ class ExtensionManager(Generic[TApp]):
         """Handles an exception that originated from the extension with the
         given name.
         """
-        base_log.exception(
-            "Unexpected exception caught from extension {0!r}".format(extension_name)
-        )
+        if isinstance(exc, NotLoadableError):
+            # Log the exception with a standard message
+            extra = {"id": extension_name}
+            message = str(exc)
+            if message:
+                base_log.error(f"Extension cannot be loaded. {message}", extra=extra)
+            else:
+                base_log.error("Extension cannot be loaded", extra=extra)
+        else:
+            base_log.exception(
+                "Unexpected exception caught from extension {0!r}".format(
+                    extension_name
+                )
+            )
 
         await self.unload(extension_name)
 
