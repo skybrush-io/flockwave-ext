@@ -554,7 +554,10 @@ class ExtensionManager(Generic[TApp]):
         }
         if disable_unloaded:
             for name, config in result.items():
-                if not self.is_loaded(name):
+                if self.is_loaded(name):
+                    if "enabled" in config and not bool(config["enabled"]):
+                        config["enabled"] = True
+                else:
                     config["enabled"] = False
         return result
 
