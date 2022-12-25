@@ -826,6 +826,25 @@ class ExtensionManager(Generic[TApp]):
         """
         return sorted(key for key, ext in self._extension_data.items() if ext.loaded)
 
+    @property
+    def loaded_leaf_extensions(self) -> List[str]:
+        """Returns a list containing the names of extensions that are currently
+        loaded into the extension manager such that no other extensions depend on
+        them. The caller is free to modify the list; it will not affect the
+        extension manager.
+
+        Returns:
+            the names of all the extensions that are currently loaded and where
+            no other extensions depend on them
+        """
+        loaded = set(self.loaded_extensions)
+        to_remove = set(
+            key
+            for key in self.loaded_extensions
+            if not loaded.isdisjoint(self._extension_data[key].dependents)
+        )
+        return sorted(loaded - to_remove)
+
     def is_loaded(self, extension_name: str) -> bool:
         """Returns whether the given extension is loaded."""
         try:
