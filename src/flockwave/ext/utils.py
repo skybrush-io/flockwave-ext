@@ -12,7 +12,7 @@ from typing import (
     overload,
 )
 
-from trio import CancelScope, Event, MultiError
+from trio import CancelScope, Event
 
 __all__ = ("AwaitableCancelScope", "bind", "cancellable", "keydefaultdict", "protected")
 
@@ -153,15 +153,6 @@ class keydefaultdict(DefaultDict[K, V]):
             return ret
 
 
-def _multierror_has_base_exception(multi_ex: MultiError) -> bool:
-    for ex in multi_ex.exceptions:
-        if isinstance(ex, MultiError) and _multierror_has_base_exception(ex):
-            return True
-        if not isinstance(ex, Exception):
-            return True
-    return False
-
-
 @overload
 def protected(
     handler: Logger,
@@ -216,17 +207,6 @@ def protected(handler) -> Any:
             async def decorated_async(*args, **kwds):
                 try:
                     return await func(*args, **kwds)  # type: ignore
-                except MultiError as multi_ex:
-                    # If there is at least one BaseException in the MultiError,
-                    # re-raise the entire MultiError. This is needed to allow
-                    # Trio to handle Cancelled exceptions properly
-                    if _multierror_has_base_exception(multi_ex):
-                        raise
-                    else:
-                        if iscoroutinefunction(real_handler):
-                            return await real_handler(multi_ex)
-                        else:
-                            return real_handler(multi_ex)
                 except Exception as ex:
                     if iscoroutinefunction(real_handler):
                         return await real_handler(ex)
