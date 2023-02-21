@@ -101,7 +101,7 @@ class ExtensionBase(Generic[TApp]):
 
     async def start_in_background(
         self, func: Callable[..., Awaitable[Any]], *args, protect: bool = True
-    ) -> None:
+    ):
         """Schedules the given function to be executed in the background in the
         context of this extension, waiting for the function to start up. The
         function is automatically stopped when the extension is unloaded.
