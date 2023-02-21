@@ -3,7 +3,17 @@
 from contextlib import asynccontextmanager
 from logging import Logger
 from trio import Lock, Nursery, open_nursery, WouldBlock
-from typing import Any, AsyncIterator, Callable, Dict, Generic, Optional, TypeVar
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    Generic,
+    Optional,
+    TypeVar,
+)
+from warnings import warn
 
 __all__ = ("ExtensionBase",)
 
@@ -80,7 +90,40 @@ class ExtensionBase(Generic[TApp]):
         """
         pass
 
-    def run_in_background(self, func: Callable, *args, protect: bool = True) -> None:
+    def run_in_background(
+        self, func: Callable[..., Awaitable[Any]], *args, protect: bool = True
+    ) -> None:
+        warn(
+            "run_in_background() is deprecated, use start_in_background_soon() instead",
+            DeprecationWarning,
+        )
+        return self.start_in_background_soon(func, *args, protect=protect)
+
+    async def start_in_background(
+        self, func: Callable[..., Awaitable[Any]], *args, protect: bool = True
+    ) -> None:
+        """Schedules the given function to be executed in the background in the
+        context of this extension, waiting for the function to start up. The
+        function is automatically stopped when the extension is unloaded.
+
+        This function requires the extension-specific nursery to be open; use
+        the `use_nursery()` context manager to open the nursery.
+
+        Parameters:
+            protect: whether to protect the nursery that the function is running
+                in from closing when the function raises an exception
+        """
+        self._ensure_nursery()
+        assert self._nursery is not None
+
+        if protect:
+            return await self._nursery.start(self._run_protected, func, *args)
+        else:
+            return await self._nursery.start(func, *args)
+
+    def start_in_background_soon(
+        self, func: Callable[..., Awaitable[Any]], *args, protect: bool = True
+    ) -> None:
         """Schedules the given function to be executed in the background in the
         context of this extension. The function is automatically stopped when
         the extension is unloaded.
@@ -92,30 +135,13 @@ class ExtensionBase(Generic[TApp]):
             protect: whether to protect the nursery that the function is running
                 in from closing when the function raises an exception
         """
-        if not self._nursery:
-            raise RuntimeError(
-                "Cannot run task in background, the extension has not started "
-                + "serving background tasks yet. Did you forget to call "
-                + "use_nursery()?"
-            )
+        self._ensure_nursery()
+        assert self._nursery is not None
 
         if protect:
             self._nursery.start_soon(self._run_protected, func, *args)
         else:
             self._nursery.start_soon(func, *args)
-
-    async def _run_protected(self, func, *args) -> None:
-        """Runs the given function in a "protected" mode that prevents exceptions
-        emitted from it to crash the nursery that the function is being executed
-        in.
-        """
-        try:
-            await func(*args)
-        except Exception:
-            if self.log:
-                self.log.exception(
-                    f"Unexpected exception caught from background task {func.__name__}"
-                )
 
     def spindown(self) -> None:
         """Handler that is called by the extension manager when the
@@ -182,3 +208,30 @@ class ExtensionBase(Generic[TApp]):
         finally:
             self._nursery = None
             self._nursery_lock.release()
+
+    def _ensure_nursery(self) -> None:
+        """Ensures that the extension has a nursery assigned to it that can be
+        used to run background tasks.
+
+        Raises:
+            RuntimeError: if the extension has not been assigned a nursery yet
+        """
+        if not self._nursery:
+            raise RuntimeError(
+                "Cannot run task in background, the extension has not started "
+                + "serving background tasks yet. Did you forget to call "
+                + "use_nursery()?"
+            )
+
+    async def _run_protected(self, func: Callable[..., Awaitable[Any]], *args):
+        """Runs the given function in a "protected" mode that prevents exceptions
+        emitted from it to crash the nursery that the function is being executed
+        in.
+        """
+        try:
+            return await func(*args)
+        except Exception:
+            if self.log:
+                self.log.exception(
+                    f"Unexpected exception caught from background task {func.__name__}"
+                )
