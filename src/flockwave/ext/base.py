@@ -101,7 +101,7 @@ class ExtensionBase(Generic[TApp]):
 
     async def start_in_background(
         self, func: Callable[..., Awaitable[Any]], *args, protect: bool = True
-    ):
+    ) -> Any:
         """Schedules the given function to be executed in the background in the
         context of this extension, waiting for the function to start up. The
         function is automatically stopped when the extension is unloaded.
@@ -117,7 +117,9 @@ class ExtensionBase(Generic[TApp]):
         assert self._nursery is not None
 
         if protect:
-            return await self._nursery.start(self._run_protected, func, *args)
+            return await self._nursery.start(
+                self._run_protected_with_task_status, func, *args
+            )
         else:
             return await self._nursery.start(func, *args)
 
@@ -230,6 +232,21 @@ class ExtensionBase(Generic[TApp]):
         """
         try:
             return await func(*args)
+        except Exception:
+            if self.log:
+                self.log.exception(
+                    f"Unexpected exception caught from background task {func.__name__}"
+                )
+
+    async def _run_protected_with_task_status(
+        self, func: Callable[..., Awaitable[Any]], *args, task_status
+    ):
+        """Runs the given function in a "protected" mode that prevents exceptions
+        emitted from it to crash the nursery that the function is being executed
+        in.
+        """
+        try:
+            return await func(*args, task_status=task_status)
         except Exception:
             if self.log:
                 self.log.exception(
