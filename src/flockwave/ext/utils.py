@@ -135,6 +135,22 @@ def cancellable(func):
     return decorated
 
 
+def get_name_of_function(func, *, recursion_limit: int = 5) -> str:
+    """Retrieves the name of the given function if it provides a name, or
+    returns a generic name otherwise.
+    """
+    if hasattr(func, "__name__"):
+        return func.__name__
+    elif isinstance(func, partial_) and recursion_limit > 0:
+        return (
+            "<partial function of "
+            + get_name_of_function(func.func, recursion_limit=recursion_limit - 1)
+            + ">"
+        )
+    else:
+        return "<unknown function>"
+
+
 class keydefaultdict(DefaultDict[K, V]):
     """defaultdict subclass that passes the key of the item being created
     to the default factory.
@@ -216,7 +232,6 @@ def protected(handler) -> Any:
             return decorated_async  # type: ignore
 
         else:
-
             if iscoroutinefunction(handler):
                 raise ValueError("cannot use async handler with sync function")
 

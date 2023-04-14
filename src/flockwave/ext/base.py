@@ -15,6 +15,8 @@ from typing import (
 )
 from warnings import warn
 
+from .utils import get_name_of_function
+
 __all__ = ("ExtensionBase",)
 
 
@@ -235,7 +237,8 @@ class ExtensionBase(Generic[TApp]):
         except Exception:
             if self.log:
                 self.log.exception(
-                    f"Unexpected exception caught from background task {func.__name__}"
+                    "Unexpected exception caught from background task "
+                    + get_name_of_function(func)
                 )
 
     async def _run_protected_with_task_status(
@@ -250,5 +253,6 @@ class ExtensionBase(Generic[TApp]):
         except Exception:
             if self.log:
                 self.log.exception(
-                    f"Unexpected exception caught from background task {func.__name__}"
+                    "Unexpected exception caught from background task "
+                    + get_name_of_function(func)
                 )
