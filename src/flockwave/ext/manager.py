@@ -29,6 +29,7 @@ from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
 from .errors import (
     ApplicationExit,
+    ApplicationRestart,
     NoSuchExtension,
     NotLoadableError,
     NotSupportedError,
@@ -180,6 +181,11 @@ class ExtensionData:
     activated when the extension is loaded the next time.
     """
 
+    requested_host_app_restart: bool = False
+    """Whether the extension has requested the host application to restart
+    itself.
+    """
+
     task: Optional[AwaitableCancelScope] = None
     """A cancellation scope for the background task that was spawned for the
     extension when it was loaded, or `None` if no such task was spawned.
@@ -252,6 +258,13 @@ class ExtensionManager(Generic[TApp]):
     unloaded. The signal has two keyword arguments: ``name`` and ``extension``.
     """
     )
+    restart_requested = Signal(
+        doc="""\
+    Signal that is sent by the extension manager when an extension requests the
+    host application to reload itself. The signal has one keyword argument:
+    ``name``, containing the name of the extension.
+    """
+    )
 
     module_finder: ExtensionModuleFinder
     """Object that is responsible for finding extension modules given their
@@ -260,6 +273,11 @@ class ExtensionManager(Generic[TApp]):
 
     _app: Optional[TApp]
     """The application that owns the extension manager."""
+
+    _app_restart_requested_by: Set[str]
+    """Iterable containing the names of the extensions that have requested the
+    host application to restart itself.
+    """
 
     _extension_data: keydefaultdict[str, ExtensionData]
     """Dictionary mapping extension names to their associated data object."""
@@ -302,6 +320,7 @@ class ExtensionManager(Generic[TApp]):
 
         self._app = None
 
+        self._app_restart_requested_by = set()
         self._extension_data = keydefaultdict(self._create_extension_data)
         self._load_order = MRUContainer()
         self._spinning = False
@@ -312,6 +331,13 @@ class ExtensionManager(Generic[TApp]):
         be passed on to the extensions when they are initialized.
         """
         return self._app
+
+    @property
+    def app_restart_requested(self) -> bool:
+        """Returns whether at least one extension has requested the host
+        application to restart itself.
+        """
+        return bool(self._app_restart_requested_by)
 
     async def set_app(self, value: Optional[TApp]) -> None:
         """Asynchronous setter for the application context of the
@@ -647,6 +673,12 @@ class ExtensionManager(Generic[TApp]):
 
         return description
 
+    def get_extensions_requesting_app_restart(self) -> Iterable[str]:
+        """Returns an iterable that yields the names of all the extensions that
+        have requested the application to restart itself.
+        """
+        return sorted(self._app_restart_requested_by)
+
     def get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
         """Determines the list of _loaded_ extensions that depend on a given
         extension directly.
@@ -870,6 +902,17 @@ class ExtensionManager(Generic[TApp]):
         for dep in reversed(history):
             await self.load(dep)
 
+    def request_host_app_restart(self, extension_name: str) -> None:
+        """Callback function that can be called from an extension if the
+        extension wishes to request the host application to restart itself.
+
+        No-op if the extension has already requested a restart.
+
+        Args:
+            extension_name: name of the extension requesting the restart
+        """
+        self._on_extension_requested_app_restart(extension_name)
+
     async def run(
         self,
         *,
@@ -992,6 +1035,15 @@ class ExtensionManager(Generic[TApp]):
         """
         return await self._unload(extension_name, forbidden=[], history=[])
 
+    def was_app_restart_requested_by(self, extension_name: str) -> bool:
+        """Returns whether the extension has already requested the host
+        application to restart itself.
+        """
+        if extension_name not in self._extension_data:
+            return False
+
+        return self._extension_data[extension_name].requested_host_app_restart
+
     async def _load(
         self, extension_name: str, forbidden: List[str], history: List[str]
     ):
@@ -1070,6 +1122,9 @@ class ExtensionManager(Generic[TApp]):
                 else:
                     log.error("Extension cannot be loaded", extra=extra)
                 return None
+            except ApplicationRestart:
+                self._on_extension_requested_app_restart(extension_name)
+                return None
             except ApplicationExit:
                 # Let this exception propagate
                 raise
@@ -1102,6 +1157,21 @@ class ExtensionManager(Generic[TApp]):
             await self._spinup_extension(extension_name)
 
         return result
+
+    def _on_extension_requested_app_restart(self, extension_name: str) -> None:
+        """Handles the event when an extension requests the host application
+        to restart itself (typically by throwing ApplicationRestart_ or by
+        calling the appropriate method of the extension manager.
+        """
+        if extension_name in self._app_restart_requested_by:
+            return
+
+        ext = self._extension_data[extension_name]
+        ext.requested_host_app_restart = True
+
+        self._app_restart_requested_by.add(extension_name)
+
+        self.restart_requested.send(self, name=extension_name)
 
     async def _on_extension_task_crashed(
         self, extension_name: str, exc: BaseException
@@ -1137,7 +1207,11 @@ class ExtensionManager(Generic[TApp]):
         # Don't use partial() here -- it's hard to detect whether a partial
         # function is async or not
         async def handler(exc: BaseException) -> None:
-            await self._on_extension_task_crashed(extension_name, exc)
+            try:
+                await self._on_extension_task_crashed(extension_name, exc)
+            except ApplicationRestart:
+                # Not an error
+                self._on_extension_requested_app_restart(extension_name)
 
         return protected(handler)(func)
 
@@ -1291,6 +1365,8 @@ class ExtensionManager(Generic[TApp]):
             except ApplicationExit:
                 # Let this exception propagate
                 raise
+            except ApplicationRestart:
+                self._on_extension_requested_app_restart(extension_name)
             except NotSupportedError:
                 # Re-raise the exception with a standard message, hiding the
                 # origin where it came from. When the entire extension manager
