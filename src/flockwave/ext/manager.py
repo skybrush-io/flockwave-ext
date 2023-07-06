@@ -601,7 +601,7 @@ class ExtensionManager(Generic[TApp]):
         try:
             module = self._get_module_for_extension(extension_name)
         except NoSuchExtension:
-            return set([])
+            return set()
         except ImportError:
             base_log.exception(
                 "Error while importing extension {0!r}".format(extension_name)
@@ -663,9 +663,9 @@ class ExtensionManager(Generic[TApp]):
                 )
                 description = None
         elif hasattr(module, "description"):
-            description = str(getattr(module, "description"))
+            description = str(module.description)
         else:
-            description = getattr(module, "__doc__")
+            description = getattr(module, "__doc__", None)
             if description and isinstance(description, str):
                 description, _, _ = description.strip().partition("\n\n")
             else:
@@ -747,7 +747,7 @@ class ExtensionManager(Generic[TApp]):
         if isinstance(tags, str):
             return set(tags.split())
         else:
-            return set(str(tag) for tag in tags)
+            return {str(tag) for tag in tags}
 
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.
@@ -870,11 +870,11 @@ class ExtensionManager(Generic[TApp]):
             no other extensions depend on them
         """
         loaded = set(self.loaded_extensions)
-        to_remove = set(
+        to_remove = {
             key
             for key in self.loaded_extensions
             if not loaded.isdisjoint(self._extension_data[key].dependents)
-        )
+        }
         return sorted(loaded - to_remove)
 
     def is_loaded(self, extension_name: str) -> bool:
@@ -1490,7 +1490,9 @@ class ExtensionAPIProxy:
         """
         self._extension_name = extension_name
         self._manager = manager
-        self._manager.loaded.connect(self._on_extension_loaded, sender=self._manager)  # type: ignore
+        self._manager.loaded.connect(
+            self._on_extension_loaded, sender=self._manager  # type: ignore
+        )
         self._manager.unloaded.connect(
             self._on_extension_unloaded, sender=self._manager  # type: ignore
         )
@@ -1503,7 +1505,7 @@ class ExtensionAPIProxy:
         try:
             return self._api[name]
         except KeyError:
-            raise AttributeError(name)
+            raise AttributeError(name) from None
 
     @property
     def loaded(self) -> bool:

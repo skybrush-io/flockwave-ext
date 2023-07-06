@@ -98,6 +98,7 @@ class ExtensionBase(Generic[TApp]):
         warn(
             "run_in_background() is deprecated, use start_in_background_soon() instead",
             DeprecationWarning,
+            stacklevel=1,
         )
         return self.start_in_background_soon(func, *args, protect=protect)
 
@@ -203,7 +204,7 @@ class ExtensionBase(Generic[TApp]):
         try:
             self._nursery_lock.acquire_nowait()
         except WouldBlock:
-            raise RuntimeError("The nursery of the extension is already open")
+            raise RuntimeError("The nursery of the extension is already open") from None
 
         try:
             async with open_nursery() as nursery:
