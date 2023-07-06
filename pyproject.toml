@@ -9,10 +9,9 @@ packages = [
 license = "MIT"
 
 [tool.poetry.dependencies]
-python = "^3.7"
+python = "^3.9"
 blinker = "^1.6.2"
 trio = "^0.22.1"
-importlib-metadata = {version = "^6.7.0", python = "<3.8"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
