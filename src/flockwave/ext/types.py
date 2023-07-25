@@ -22,10 +22,16 @@ class EnabledState(Enum):
     the user and we should show an error if we are not able to load it.
     """
 
-    AUTO = "auto"
+    PREFER = "prefer"
     """Value representing the case when the user did not express their explicit
-    preference to enabling or disabling the extension, so the extension manager
-    is free to decide whether it should be enabled or not.
+    preference to enabling or disabling the extension, and the extension manager
+    should prefer to enable it if possible.
+    """
+
+    AVOID = "avoid"
+    """Value representing the case when the user did not express their explicit
+    preference to enabling or disabling the extension, and the extension manager
+    should avoid enabling it unless other extensions need it.
     """
 
     @classmethod
@@ -35,7 +41,7 @@ class EnabledState(Enum):
         elif value is False:
             return cls.NO
         elif value is None:
-            return cls.AUTO
+            return cls.PREFER
         elif isinstance(value, cls):
             return value
         elif isinstance(value, str):

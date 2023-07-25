@@ -414,7 +414,7 @@ class ExtensionManager(Generic[TApp]):
             enabled = self.get_enabled_state_of_extension(extension_name)
             if enabled is EnabledState.YES:
                 await self.load(extension_name)
-            elif enabled is EnabledState.AUTO:
+            elif enabled is EnabledState.PREFER:
                 with self._use_silent_mode():
                     await self.load(extension_name)
 
@@ -597,11 +597,15 @@ class ExtensionManager(Generic[TApp]):
                     # override it and enable it explicitly
                     if "enabled" in config:
                         enabled = self._get_enabled_state_from_configuration(config)
-                        if enabled not in (EnabledState.YES, EnabledState.AUTO):
+                        if enabled not in (EnabledState.YES, EnabledState.PREFER):
                             config["enabled"] = True
                 else:
-                    # If the extension is not loaded, mark it as disabled
-                    config["enabled"] = False
+                    # If the extension is not loaded, and in the configuration
+                    # it is marked with something else than "avoid", let us
+                    # override it an disable it explicitly
+                    enabled = self._get_enabled_state_from_configuration(config)
+                    if enabled not in (EnabledState.NO, EnabledState.AVOID):
+                        config["enabled"] = False
         return result
 
     def get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
@@ -1228,7 +1232,7 @@ class ExtensionManager(Generic[TApp]):
         """
         if isinstance(exc, NotLoadableError):
             enabled_state = self.get_enabled_state_of_extension(extension_name)
-            if enabled_state is not EnabledState.AUTO:
+            if enabled_state is not EnabledState.PREFER:
                 self._on_extension_not_loadable(extension_name, str(exc))
         else:
             base_log.exception(
@@ -1530,7 +1534,7 @@ class ExtensionManager(Generic[TApp]):
 
     @staticmethod
     def _get_enabled_state_from_configuration(cfg: Configuration) -> EnabledState:
-        enabled = cfg.get("enabled", EnabledState.AUTO)
+        enabled = cfg.get("enabled", EnabledState.PREFER)
         try:
             return EnabledState.from_object(enabled)
         except ValueError:
