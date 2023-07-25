@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from blinker import Signal
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -18,6 +19,7 @@ from typing import (
     Dict,
     Generic,
     Iterable,
+    Iterator,
     List,
     Optional,
     Set,
@@ -34,6 +36,7 @@ from .errors import (
     NotLoadableError,
     NotSupportedError,
 )
+from .types import EnabledState
 from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, protected
 
 __all__ = ("ExtensionManager",)
@@ -288,6 +291,11 @@ class ExtensionManager(Generic[TApp]):
     _shutting_down: bool
     """Whether the extension manager is shutting down."""
 
+    _silent_mode_entered: int
+    """Counter that indicates how many times the extension manager was requested
+    to enter silent mode without another request to counterbalance it.
+    """
+
     _spinning: bool
     """Whether the extension manager is "spinning". See the documentation of
     the `spinning` property for more details.
@@ -323,6 +331,7 @@ class ExtensionManager(Generic[TApp]):
         self._app_restart_requested_by = set()
         self._extension_data = keydefaultdict(self._create_extension_data)
         self._load_order = MRUContainer()
+        self._silent_mode_entered = 0
         self._spinning = False
 
     @property
@@ -375,7 +384,7 @@ class ExtensionManager(Generic[TApp]):
 
         # Remember all the extensions that were loaded before this function
         # was called
-        to_load = set(self.loaded_extensions)
+        maybe_to_load = set(self.loaded_extensions)
 
         # Temporarily stop all extensions while we process the new configuration
         await self.teardown()
@@ -384,16 +393,16 @@ class ExtensionManager(Generic[TApp]):
         for extension_name, extension_cfg in configuration.items():
             try:
                 self.configure(extension_name, extension_cfg)
-                to_load.add(extension_name)
+                maybe_to_load.add(extension_name)
             except NoSuchExtension:
-                # It is not a problem if the extension is disabled anyway
-                enabled = extension_cfg.get("enabled", True)
-                if enabled:
+                # It is not a problem if the extension is not enabled explicitly
+                enabled = self._get_enabled_state_from_configuration(extension_cfg)
+                if enabled.is_explicitly_enabled:
                     base_log.warning(f"No such extension: {extension_name}")
             except ImportError:
                 # It is not a problem if the extension is disabled anyway
-                enabled = extension_cfg.get("enabled", True)
-                if enabled:
+                enabled = self._get_enabled_state_from_configuration(extension_cfg)
+                if enabled.is_explicitly_enabled:
                     base_log.exception(
                         f"Error while importing extension: {extension_name}"
                     )
@@ -401,11 +410,13 @@ class ExtensionManager(Generic[TApp]):
         # Check the extensions that were originally loaded, and any new
         # extensions that were discovered from the configuration, and attempt
         # to load them if they are enabled
-        for extension_name in sorted(to_load):
-            ext = self._extension_data[extension_name]
-            enabled = ext.configuration.get("enabled", True)
-            if enabled:
+        for extension_name in sorted(maybe_to_load):
+            enabled = self.get_enabled_state_of_extension(extension_name)
+            if enabled is EnabledState.YES:
                 await self.load(extension_name)
+            elif enabled is EnabledState.AUTO:
+                with self._use_silent_mode():
+                    await self.load(extension_name)
 
     def _create_extension_data(self, extension_name: str) -> ExtensionData:
         """Creates a helper object holding all data related to the extension
@@ -581,9 +592,15 @@ class ExtensionManager(Generic[TApp]):
         if disable_unloaded:
             for name, config in result.items():
                 if self.is_loaded(name):
-                    if "enabled" in config and not bool(config["enabled"]):
-                        config["enabled"] = True
+                    # If the extension is loaded, and in the configuration it is
+                    # marked with something else than "auto" or "yes", let us
+                    # override it and enable it explicitly
+                    if "enabled" in config:
+                        enabled = self._get_enabled_state_from_configuration(config)
+                        if enabled not in (EnabledState.YES, EnabledState.AUTO):
+                            config["enabled"] = True
                 else:
+                    # If the extension is not loaded, mark it as disabled
                     config["enabled"] = False
         return result
 
@@ -781,6 +798,24 @@ class ExtensionManager(Generic[TApp]):
         if proxy is None:
             raise RuntimeError("Extension {extension_name} does not have an API")
         return proxy
+
+    def get_enabled_state_of_extension(self, extension_name: str) -> EnabledState:
+        """Returns whether the extension with the given name is enabled
+        according to its configuration object.
+
+        The return value of this function is a multi-state enum; see the
+        documentation of `EnabledState` for more information.
+
+        Returns:
+            an enum describing the enabled state of the extension, or
+            EnabledState.UNKNOWN if the extension is not known.
+        """
+        try:
+            cfg = self._extension_data[extension_name].configuration
+        except KeyError:
+            return EnabledState.UNKNOWN
+
+        return self._get_enabled_state_from_configuration(cfg)
 
     def is_experimental(self, extension_name: str) -> bool:
         """Returns whether the extension with the given name is experimental.
@@ -1116,11 +1151,7 @@ class ExtensionManager(Generic[TApp]):
             except NotLoadableError as ex:
                 # Log the exception with a standard message, hiding the origin
                 # where it came from
-                message = str(ex)
-                if message:
-                    log.error(f"Extension cannot be loaded. {message}", extra=extra)
-                else:
-                    log.error("Extension cannot be loaded", extra=extra)
+                self._on_extension_not_loadable(extension_name, str(ex))
                 return None
             except ApplicationRestart:
                 self._on_extension_requested_app_restart(extension_name)
@@ -1158,6 +1189,22 @@ class ExtensionManager(Generic[TApp]):
 
         return result
 
+    def _on_extension_not_loadable(
+        self, extension_name: str, message: Optional[str] = None
+    ) -> None:
+        """Logs a message that indicates that the extension with the given name
+        cannot be loaded.
+        """
+        if self._silent_mode_entered > 0:
+            return
+
+        # Log the exception with a standard message
+        extra = {"id": extension_name}
+        if message:
+            base_log.error(f"Extension cannot be loaded. {message}", extra=extra)
+        else:
+            base_log.error("Extension cannot be loaded", extra=extra)
+
     def _on_extension_requested_app_restart(self, extension_name: str) -> None:
         """Handles the event when an extension requests the host application
         to restart itself (typically by throwing ApplicationRestart_ or by
@@ -1180,13 +1227,9 @@ class ExtensionManager(Generic[TApp]):
         given name.
         """
         if isinstance(exc, NotLoadableError):
-            # Log the exception with a standard message
-            extra = {"id": extension_name}
-            message = str(exc)
-            if message:
-                base_log.error(f"Extension cannot be loaded. {message}", extra=extra)
-            else:
-                base_log.error("Extension cannot be loaded", extra=extra)
+            enabled_state = self.get_enabled_state_of_extension(extension_name)
+            if enabled_state is not EnabledState.AUTO:
+                self._on_extension_not_loadable(extension_name, str(exc))
         else:
             base_log.exception(
                 "Unexpected exception caught from extension {0!r}".format(
@@ -1404,6 +1447,23 @@ class ExtensionManager(Generic[TApp]):
         else:
             log.warning("Unloaded extension", extra=extra)
 
+    @contextmanager
+    def _use_silent_mode(self) -> Iterator[None]:
+        """Context manager that switches the extension manager into silent mode
+        when entering the context and resumes normal mode when exiting the context.
+
+        In silent mode, the extension manager will not log errors or warnings that
+        indicate that an extension cannot be loaded. This is useful for auto-enabling
+        extensions that require a license or some other external condition; the
+        extension manager can simply attempt to load them and then hide the error
+        message if the preconditions are not met.
+        """
+        self._silent_mode_entered += 1
+        try:
+            yield
+        finally:
+            self._silent_mode_entered -= 1
+
     async def _ensure_dependencies_loaded(
         self, extension_name: str, forbidden: List[str], history: List[str]
     ) -> None:
@@ -1467,6 +1527,14 @@ class ExtensionManager(Generic[TApp]):
             )
             return False
         return True
+
+    @staticmethod
+    def _get_enabled_state_from_configuration(cfg: Configuration) -> EnabledState:
+        enabled = cfg.get("enabled", EnabledState.AUTO)
+        try:
+            return EnabledState.from_object(enabled)
+        except ValueError:
+            return EnabledState.NO
 
 
 class ExtensionAPIProxy:
