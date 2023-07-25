@@ -29,18 +29,26 @@ TApp = TypeVar("TApp")
 class ExtensionBase(Generic[TApp]):
     """Interface specification for Flockwave extensions."""
 
-    _app: Optional[TApp]
-    _nursery: Optional[Nursery]
+    _app: Optional[TApp] = None
+    """The application hosting the extension."""
 
-    log: Optional[Logger]
+    _nursery: Optional[Nursery] = None
+    """A nursery that the extension may use to spawn subtasks in."""
+
+    _nursery_lock: Lock
+    """Lock to prevent concurrent access to the ``_nursery`` property."""
+
+    log: Optional[Logger] = None
+    """Logger that the extension may use to write log messages to."""
+
+    name: str = ""
+    """Name of the extension; assigned by the extension manager when the
+    extension is constructed.
+    """
 
     def __init__(self):
         """Constructor."""
-        self._app = None
-        self._nursery = None
         self._nursery_lock = Lock()
-
-        self.log = None
 
     @property
     def app(self) -> Optional[TApp]:

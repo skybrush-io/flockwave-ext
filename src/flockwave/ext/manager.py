@@ -1146,6 +1146,13 @@ class ExtensionManager(Generic[TApp]):
             log.exception("Error while instantiating extension", extra=extra)
             return None
 
+        if not isinstance(extension, ModuleType) and hasattr(extension, "name"):
+            try:
+                extension.name = extension_name
+            except Exception:
+                # Maybe the property is used by the extension for something else?
+                pass
+
         args = (self.app, configuration, extension_data.log)
 
         func = getattr(extension, "load", None)
