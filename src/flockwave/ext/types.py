@@ -36,6 +36,8 @@ class EnabledState(Enum):
             return cls.NO
         elif value is None:
             return cls.AUTO
+        elif isinstance(value, cls):
+            return value
         elif isinstance(value, str):
             return cls(value.lower().strip())
         elif isinstance(value, int):
