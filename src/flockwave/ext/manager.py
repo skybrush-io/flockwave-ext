@@ -248,26 +248,22 @@ class ExtensionManager(Generic[TApp]):
     the loading, configuration and unloading of extensions.
     """
 
-    loaded = Signal(
-        doc="""\
-    Signal that is sent by the extension manager when an extension has been
+    loaded = Signal()
+    """Signal that is sent by the extension manager when an extension has been
     configured and loaded. The signal has two keyword arguments: ``name`` and
     ``extension``.
     """
-    )
-    unloaded = Signal(
-        doc="""\
-    Signal that is sent by the extension manager when an extension has been
+
+    unloaded = Signal()
+    """Signal that is sent by the extension manager when an extension has been
     unloaded. The signal has two keyword arguments: ``name`` and ``extension``.
     """
-    )
-    restart_requested = Signal(
-        doc="""\
-    Signal that is sent by the extension manager when an extension requests the
+
+    restart_requested = Signal()
+    """Signal that is sent by the extension manager when an extension requests the
     host application to reload itself. The signal has one keyword argument:
     ``name``, containing the name of the extension.
     """
-    )
 
     module_finder: ExtensionModuleFinder
     """Object that is responsible for finding extension modules given their
