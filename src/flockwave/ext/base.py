@@ -8,7 +8,6 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
-    Dict,
     Generic,
     Optional,
     TypeVar,
@@ -20,7 +19,7 @@ from .utils import get_name_of_function
 __all__ = ("ExtensionBase",)
 
 
-Configuration = Dict[str, Any]
+Configuration = dict[str, Any]
 
 
 TApp = TypeVar("TApp")

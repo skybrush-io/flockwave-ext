@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import partial as partial_, wraps
 from inspect import iscoroutinefunction, Parameter, signature
 from logging import Logger
@@ -5,7 +6,6 @@ from typing import (
     Any,
     Awaitable,
     Callable,
-    DefaultDict,
     Optional,
     TypeVar,
     Union,
@@ -151,7 +151,7 @@ def get_name_of_function(func, *, recursion_limit: int = 5) -> str:
         return "<unknown function>"
 
 
-class keydefaultdict(DefaultDict[K, V]):
+class keydefaultdict(defaultdict[K, V]):
     """defaultdict subclass that passes the key of the item being created
     to the default factory.
     """

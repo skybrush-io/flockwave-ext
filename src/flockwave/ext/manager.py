@@ -16,14 +16,10 @@ from typing import (
     Any,
     Awaitable,
     Callable,
-    Dict,
     Generic,
     Iterable,
     Iterator,
-    List,
     Optional,
-    Set,
-    Tuple,
     TypeVar,
 )
 
@@ -47,10 +43,10 @@ base_log = getLogger(__name__)
 T = TypeVar("T")
 
 #: Type alias for the configuration objects of the extensions
-ExtensionConfiguration = Dict[str, Any]
+ExtensionConfiguration = dict[str, Any]
 
 #: Type alias for the configuration schema of an extension
-ExtensionConfigurationSchema = Dict[str, Any]
+ExtensionConfigurationSchema = dict[str, Any]
 
 
 @dataclass
@@ -80,7 +76,7 @@ class MRUContainer(Generic[T]):
     _tail: Node[T]
     """The tail of the linked list for backward traversal."""
 
-    _dict: Dict[T, Node[T]]
+    _dict: dict[T, Node[T]]
     """Dictionary mapping objects to the corresponding linked list nodes."""
 
     def __init__(self):
@@ -165,7 +161,7 @@ class ExtensionData:
     configuration: ExtensionConfiguration = field(default_factory=dict)
     """The current configuration object of the extension."""
 
-    dependents: Set[str] = field(default_factory=set)
+    dependents: set[str] = field(default_factory=set)
     """Names of other loaded extensions that depend on this extension."""
 
     instance: Optional[object] = None
@@ -273,7 +269,7 @@ class ExtensionManager(Generic[TApp]):
     _app: Optional[TApp]
     """The application that owns the extension manager."""
 
-    _app_restart_requested_by: Set[str]
+    _app_restart_requested_by: set[str]
     """Iterable containing the names of the extensions that have requested the
     host application to restart itself.
     """
@@ -299,7 +295,7 @@ class ExtensionManager(Generic[TApp]):
 
     _task_queue: Optional[
         SendChannel[
-            Tuple[
+            tuple[
                 Callable[..., Any], Any, Optional[AwaitableCancelScope], Optional[str]
             ]
         ]
@@ -565,7 +561,7 @@ class ExtensionManager(Generic[TApp]):
 
     def get_configuration_snapshot_dict(
         self, disable_unloaded: bool = False
-    ) -> Dict[str, ExtensionConfiguration]:
+    ) -> dict[str, ExtensionConfiguration]:
         """Returns a dictionary mapping extension names to snapshots of the
         configurations of the given extensions.
 
@@ -604,7 +600,7 @@ class ExtensionManager(Generic[TApp]):
                         config["enabled"] = False
         return result
 
-    def get_dependencies_of_extension(self, extension_name: str) -> Set[str]:
+    def get_dependencies_of_extension(self, extension_name: str) -> set[str]:
         """Determines the list of extensions that a given extension depends
         on directly.
 
@@ -696,7 +692,7 @@ class ExtensionManager(Generic[TApp]):
         """
         return sorted(self._app_restart_requested_by)
 
-    def get_reverse_dependencies_of_extension(self, extension_name: str) -> Set[str]:
+    def get_reverse_dependencies_of_extension(self, extension_name: str) -> set[str]:
         """Determines the list of _loaded_ extensions that depend on a given
         extension directly.
 
@@ -718,7 +714,7 @@ class ExtensionManager(Generic[TApp]):
 
         return reverse_dependencies
 
-    def get_tags_of_extension(self, extension_name: str) -> Set[str]:
+    def get_tags_of_extension(self, extension_name: str) -> set[str]:
         """Returns the list of tags associated to the extension with the given
         name.
 
@@ -834,7 +830,7 @@ class ExtensionManager(Generic[TApp]):
         return "experimental" in tags
 
     @property
-    def known_extensions(self) -> List[str]:
+    def known_extensions(self) -> list[str]:
         """Returns a list containing the names of all the extensions that the
         extension manager currently knows about (even if they are currently
         unloaded). The caller is free to modify the list; it will not affect
@@ -883,7 +879,7 @@ class ExtensionManager(Generic[TApp]):
         return await self._load(extension_name, forbidden=[], history=[])
 
     @property
-    def loaded_extensions(self) -> List[str]:
+    def loaded_extensions(self) -> list[str]:
         """Returns a list containing the names of all the extensions that
         are currently loaded into the extension manager. The caller is free
         to modify the list; it will not affect the extension manager.
@@ -894,7 +890,7 @@ class ExtensionManager(Generic[TApp]):
         return sorted(key for key, ext in self._extension_data.items() if ext.loaded)
 
     @property
-    def loaded_leaf_extensions(self) -> List[str]:
+    def loaded_leaf_extensions(self) -> list[str]:
         """Returns a list containing the names of extensions that are currently
         loaded into the extension manager such that no other extensions depend on
         them. The caller is free to modify the list; it will not affect the
@@ -1080,7 +1076,7 @@ class ExtensionManager(Generic[TApp]):
         return self._extension_data[extension_name].requested_host_app_restart
 
     async def _load(
-        self, extension_name: str, forbidden: List[str], history: List[str]
+        self, extension_name: str, forbidden: list[str], history: list[str]
     ):
         """Loads an extension with the given name, ensuring that all its
         dependencies are loaded before the extension itself.
@@ -1346,7 +1342,7 @@ class ExtensionManager(Generic[TApp]):
             )
 
     async def _unload(
-        self, extension_name: str, forbidden: List[str], history: List[str]
+        self, extension_name: str, forbidden: list[str], history: list[str]
     ) -> None:
         """Unloads an extension with the given name, ensuring that all its
         reverse dependencies are unloaded before the extension itself.
@@ -1472,7 +1468,7 @@ class ExtensionManager(Generic[TApp]):
             self._silent_mode_entered -= 1
 
     async def _ensure_dependencies_loaded(
-        self, extension_name: str, forbidden: List[str], history: List[str]
+        self, extension_name: str, forbidden: list[str], history: list[str]
     ) -> None:
         """Ensures that all the dependencies of the given extension are
         loaded.
@@ -1499,7 +1495,7 @@ class ExtensionManager(Generic[TApp]):
             forbidden.pop()
 
     async def _ensure_reverse_dependencies_unloaded(
-        self, extension_name: str, forbidden: List[str], history: List[str]
+        self, extension_name: str, forbidden: list[str], history: list[str]
     ) -> None:
         """Ensures that all the dependencies of the given extension are
         unloaded.
@@ -1526,7 +1522,7 @@ class ExtensionManager(Generic[TApp]):
             forbidden.pop()
 
     @staticmethod
-    def _ensure_no_cycle(forbidden: List[str], extension_name: str) -> bool:
+    def _ensure_no_cycle(forbidden: list[str], extension_name: str) -> bool:
         if extension_name in forbidden:
             cycle = forbidden + [extension_name]
             base_log.error(

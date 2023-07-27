@@ -5,7 +5,7 @@ managed by an extension manager.
 from importlib import import_module
 from pkgutil import get_loader
 from types import ModuleType
-from typing import Dict, Iterable, Iterator, List
+from typing import Iterable, Iterator
 
 try:
     from importlib.metadata import entry_points, EntryPoint
@@ -49,15 +49,15 @@ class ExtensionModuleFinder:
     an extension manager.
     """
 
-    _entry_point_groups: List[str]
+    _entry_point_groups: list[str]
     """Names of PyPA entry point groups that can be used to discover
     extension modules.
     """
 
-    _module_name_cache: Dict[str, str]
+    _module_name_cache: dict[str, str]
     """Cache that contains discovered module names for extensions."""
 
-    _package_roots: List[str]
+    _package_roots: list[str]
     """Names of Python packages that act as root namespaces for extension
     modules.
     """
