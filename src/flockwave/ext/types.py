@@ -1,5 +1,13 @@
+from __future__ import annotations
+
+from contextlib import AbstractContextManager
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from .manager import ExtensionAPIProxy
+
+__all__ = ("Disposer", "EnabledState", "Enhancer")
 
 
 class EnabledState(Enum):
@@ -54,3 +62,12 @@ class EnabledState(Enum):
     @property
     def is_explicitly_enabled(self) -> bool:
         return self is EnabledState.YES
+
+
+Disposer = Callable[[], None]
+"""Type specification for disposer functions."""
+
+Enhancer = Callable[
+    ["ExtensionAPIProxy"], Optional[Union[Disposer, AbstractContextManager[None]]]
+]
+"""Type specification for extension enhancer functions."""

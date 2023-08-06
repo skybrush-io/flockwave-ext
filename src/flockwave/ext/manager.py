@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from blinker import Signal
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -32,8 +32,15 @@ from .errors import (
     NotLoadableError,
     NotSupportedError,
 )
-from .types import EnabledState
-from .utils import AwaitableCancelScope, bind, cancellable, keydefaultdict, protected
+from .types import Disposer, EnabledState, Enhancer
+from .utils import (
+    AwaitableCancelScope,
+    bind,
+    cancellable,
+    keydefaultdict,
+    nop,
+    protected,
+)
 
 __all__ = ("ExtensionManager",)
 
@@ -155,7 +162,7 @@ class ExtensionData:
     name: str
     """The name of the extension."""
 
-    api_proxy: Optional["ExtensionAPIProxy"] = None
+    api_proxy: Optional[ExtensionAPIProxy] = None
     """The API object that the extension exports."""
 
     configuration: ExtensionConfiguration = field(default_factory=dict)
@@ -163,6 +170,20 @@ class ExtensionData:
 
     dependents: set[str] = field(default_factory=set)
     """Names of other loaded extensions that depend on this extension."""
+
+    enhances: dict[str, Enhancement] = field(default_factory=dict)
+    """List of enhancement objects in which this extension is the provider.
+
+    This list is the primary owner of Enhancement_ objects. When an enhancement
+    is removed from this list, it must also be removed from the corresponding
+    ``enhanced_by`` property in the target extension.
+    """
+
+    enhanced_by: dict[str, Enhancement] = field(default_factory=dict)
+    """List of enhancement objects in which this extension is the target.
+
+    See the ``enhances`` property for ownership rules.
+    """
 
     instance: Optional[object] = None
     """The loaded instance of the extension; ``None`` if the extension is
@@ -197,7 +218,7 @@ class ExtensionData:
     """
 
     @classmethod
-    def for_extension(cls, name: str) -> "ExtensionData":
+    def for_extension(cls, name: str) -> ExtensionData:
         return cls(name=name, log=base_log.getChild(name))
 
     def commit_configuration_changes(self) -> ExtensionConfiguration:
@@ -237,6 +258,80 @@ class ExtensionData:
         configuration.
         """
         return self.next_configuration is not None
+
+
+@dataclass
+class Enhancement:
+    """Enhancement link between two extensions.
+
+    Enhancements allow one extension to extend the functionality of another
+    extension by using the API of the latter, but _only_ when both extensions
+    are loaded. This is essentially a "soft dependency" between the two
+    extensions such that they can be loaded and unloaded freely but they can
+    still work together when both are loaded.
+
+    The two extensions involved in an enhancement are called _provider_ and
+    _target_. The enhancement is declared in the metadata of the provider. The
+    target is not aware of the enhancement until the provider is loaded.
+    """
+
+    enhancer: Enhancer
+    """Function that will be called when both extensions are loaded."""
+
+    provider: str = ""
+    """Name of the extension that _provides_ the enhancement to another
+    extension.
+    """
+
+    target: str = ""
+    """Name of the extension that the enhancement _targets_."""
+
+    disposer: Optional[Disposer] = None
+    """Disposer function to call when any of the two extensions involved are
+    unloaded. ``None`` means that the enhancement is not active yet because
+    at least one of the extensions involved is not loaded.
+    """
+
+    @property
+    def active(self) -> bool:
+        """Returns whether the enhancement is active. The enhancement is active
+        if the enhancer function has already been called and we received a
+        disposer function to call when any of them are unloaded.
+        """
+        return self.disposer is not None
+
+    def other(self, extension_name: str) -> str:
+        """Returns the _other_ endpoint of the extension that is not equal to
+        the given extension name.
+        """
+        return self.provider if extension_name != self.provider else self.target
+
+    def activate(self, api: "ExtensionAPIProxy") -> None:
+        if self.active:
+            raise RuntimeError("enhancement is already activated")
+
+        result = self.enhancer(api)
+        if result is None:
+            disposer = nop
+        elif isinstance(result, AbstractContextManager):
+            result.__enter__()
+
+            def disposer():
+                return result.__exit__(None, None, None)
+
+        else:
+            disposer = result
+
+        self.disposer = disposer  # type: ignore
+
+    def deactivate(self) -> None:
+        if not self.active:
+            raise RuntimeError("enhancement is already inactive")
+
+        assert self.disposer is not None
+
+        disposer, self.disposer = self.disposer, None
+        disposer()
 
 
 class ExtensionManager(Generic[TApp]):
@@ -1121,6 +1216,8 @@ class ExtensionManager(Generic[TApp]):
         configuration = extension_data.commit_configuration_changes()
 
         log.debug("Loading extension", extra=extra)
+
+        # Find the module for the extension
         try:
             module = self._get_module_for_extension(extension_name)
         except NoSuchExtension:
@@ -1130,6 +1227,7 @@ class ExtensionManager(Generic[TApp]):
             log.exception("Error while importing extension", extra=extra)
             return None
 
+        # Create the extension instance
         instance_factory = getattr(module, "construct", None)
 
         try:
@@ -1147,6 +1245,7 @@ class ExtensionManager(Generic[TApp]):
 
         args = (self.app, configuration, extension_data.log)
 
+        # Call the "load" callback
         func = getattr(extension, "load", None)
         if callable(func):
             try:
@@ -1168,6 +1267,7 @@ class ExtensionManager(Generic[TApp]):
         else:
             result = None
 
+        # Spawn the "run" task
         task = getattr(extension, "run", None)
         if iscoroutinefunction(task):
             task = bind(task, args, partial=True)
@@ -1178,15 +1278,58 @@ class ExtensionManager(Generic[TApp]):
         elif task is not None:
             log.warn("run() must be an async function", extra=extra)
 
+        # Register enhancements
+        enhances: Optional[dict[str, Enhancer]] = getattr(extension, "enhances", None)
+        extension_data.enhances = {}
+        if isinstance(enhances, dict):
+            extension_data.enhances.update(
+                {
+                    k: Enhancement(enhancer=v, provider=extension_name, target=k)
+                    for k, v in enhances.items()
+                }
+            )
+        elif enhances is not None:
+            log.warn("enhancements must be provided in a dict")
+
+        for target, enhancement in extension_data.enhances.items():
+            self._extension_data[target].enhanced_by[extension_name] = enhancement
+
+        # Finalize loading
         extension_data.instance = extension
         extension_data.loaded = True
         self._load_order.append(extension_name)
 
+        # Register dependents
         for dependency in self.get_dependencies_of_extension(extension_name):
             self._extension_data[dependency].dependents.add(extension_name)
 
+        # Activate enhancements where this extension is the provider or the target
+        enhancements_to_activate = [
+            enhancement
+            for other, enhancement in extension_data.enhances.items()
+            if self._extension_data[other].loaded and not enhancement.active
+        ]
+        enhancements_to_activate.extend(
+            enhancement
+            for other, enhancement in extension_data.enhanced_by.items()
+            if self._extension_data[other].loaded and not enhancement.active
+        )
+        for enhancement in enhancements_to_activate:
+            log.debug(
+                f"Activating enhancement for {enhancement.target!r}",
+                extra={"id": enhancement.provider},
+            )
+
+            other = enhancement.other(extension_name)
+            api = self._extension_data[other].api_proxy
+
+            assert api is not None
+            enhancement.activate(api)
+
+        # Send the "loaded" signal
         self.loaded.send(self, name=extension_name, extension=extension)
 
+        # Spin up the extension
         if self._spinning:
             await self._spinup_extension(extension_name)
 
@@ -1389,6 +1532,31 @@ class ExtensionManager(Generic[TApp]):
             )
             raise RuntimeError(message)
 
+        # Unload the extension
+        clean_unload = True
+
+        # Cancel all enhancements where this extension is the provider or the
+        # target
+        enhancements = list(reversed(extension_data.enhanced_by.values())) + list(
+            reversed(extension_data.enhances.values())
+        )
+        extension_data.enhances.clear()
+        for enhancement in enhancements:
+            try:
+                if enhancement.active:
+                    enhancement.deactivate()
+                    log.debug(
+                        f"Deactivated enhancement for {enhancement.other(extension_name)!r}",
+                        extra=extra,
+                    )
+            except Exception:
+                clean_unload = False
+                log.exception(
+                    f"Error while cancelling enhancement to extension "
+                    f"{enhancement.target!r}; forcing unload",
+                    extra={"id": enhancement.provider},
+                )
+
         # Spin down the extension if needed
         if self._spinning:
             await self._spindown_extension(extension_name)
@@ -1398,9 +1566,6 @@ class ExtensionManager(Generic[TApp]):
         if task:
             extension_data.task = None
             await task.cancel()
-
-        # Unload the extension
-        clean_unload = True
 
         args = (self.app,)
 
