@@ -7,6 +7,7 @@ from typing import (
     Awaitable,
     Callable,
     Optional,
+    Sequence,
     TypeVar,
     Union,
     overload,
@@ -87,7 +88,7 @@ class AwaitableCancelScope:
             self.notify_processed()
 
 
-def bind(func, args=None, kwds=None, *, partial=False):
+def bind(func, args: Optional[Sequence[Any]] = None, kwds=None, *, partial=False):
     """Variant of `functools.partial()` that allows the argument list to
     be longer than the number of arguments accepted by the function if
     `partial` is set to `True`. If this is the case, the argument list
@@ -100,6 +101,9 @@ def bind(func, args=None, kwds=None, *, partial=False):
     """
     if not args and not kwds:
         return func
+
+    if args is None:
+        args = ()
 
     if partial:
         num_args = 0
@@ -130,7 +134,7 @@ def cancellable(func):
         with cancel_scope:
             return await func(*args, **kwds)
 
-    decorated._cancellable = True
+    decorated._cancellable = True  # type: ignore
 
     return decorated
 
@@ -167,6 +171,13 @@ class keydefaultdict(defaultdict[K, V]):
         else:
             ret = self[key] = self.default_factory(key)
             return ret
+
+
+def nop(*args, **kwds) -> None:
+    """Helper function that can be called with any number of arguments and
+    does nothing.
+    """
+    pass
 
 
 @overload
