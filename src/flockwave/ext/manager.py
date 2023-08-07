@@ -781,6 +781,49 @@ class ExtensionManager(Generic[TApp]):
 
         return description
 
+    def get_enhancements_of_extension(self, extension_name: str) -> dict[str, Enhancer]:
+        """Returns a dictionary mapping names of other extensions that an
+        extension enhances to the corresponding enhancer function or context
+        manager.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the mapping of extension names to enhancements; an empty dictionary
+            if the extension does not enhance any other extension
+        """
+        try:
+            module = self._get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            base_log.warning(f"No such extension: {extension_name}")
+            return {}
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            raise
+
+        func = getattr(module, "get_enhancers", None)
+        if callable(func):
+            try:
+                enhancers = func()
+            except Exception:
+                base_log.exception(
+                    "Error while getting the enhancers of extension {0!r}".format(
+                        extension_name
+                    )
+                )
+                enhancers = {}
+        elif hasattr(module, "enhancers"):
+            enhancers = module.enhancers
+        elif hasattr(module, "enhances"):
+            enhancers = module.enhances
+        else:
+            enhancers = {}
+
+        return enhancers
+
     def get_extensions_requesting_app_restart(self) -> Iterable[str]:
         """Returns an iterable that yields the names of all the extensions that
         have requested the application to restart itself.
@@ -1279,7 +1322,7 @@ class ExtensionManager(Generic[TApp]):
             log.warn("run() must be an async function", extra=extra)
 
         # Register enhancements
-        enhances: Optional[dict[str, Enhancer]] = getattr(extension, "enhances", None)
+        enhances = self.get_enhancements_of_extension(extension_name)
         extension_data.enhances = {}
         if isinstance(enhances, dict):
             extension_data.enhances.update(
@@ -1303,7 +1346,13 @@ class ExtensionManager(Generic[TApp]):
         for dependency in self.get_dependencies_of_extension(extension_name):
             self._extension_data[dependency].dependents.add(extension_name)
 
-        # Activate enhancements where this extension is the provider or the target
+        # Send the "loaded" signal
+        self.loaded.send(self, name=extension_name, extension=extension)
+
+        # Activate enhancements where this extension is the provider or the
+        # target. Note that this is the earliest point where we can do this
+        # because the "loaded" signal above is the one that exposes the
+        # API of the target so that the provider can call it.
         enhancements_to_activate = [
             enhancement
             for other, enhancement in extension_data.enhances.items()
@@ -1320,14 +1369,10 @@ class ExtensionManager(Generic[TApp]):
                 extra={"id": enhancement.provider},
             )
 
-            other = enhancement.other(extension_name)
-            api = self._extension_data[other].api_proxy
+            api = self._extension_data[enhancement.target].api_proxy
 
             assert api is not None
             enhancement.activate(api)
-
-        # Send the "loaded" signal
-        self.loaded.send(self, name=extension_name, extension=extension)
 
         # Spin up the extension
         if self._spinning:
