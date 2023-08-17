@@ -1275,6 +1275,9 @@ class ExtensionManager(Generic[TApp]):
 
         try:
             extension = instance_factory() if instance_factory else module
+        except NotLoadableError as ex:
+            self._on_extension_not_loadable(extension_name, str(ex))
+            return None
         except Exception:
             log.exception("Error while instantiating extension", extra=extra)
             return None
@@ -1294,8 +1297,6 @@ class ExtensionManager(Generic[TApp]):
             try:
                 result = bind(func, args, partial=True)()
             except NotLoadableError as ex:
-                # Log the exception with a standard message, hiding the origin
-                # where it came from
                 self._on_extension_not_loadable(extension_name, str(ex))
                 return None
             except ApplicationRestart:
