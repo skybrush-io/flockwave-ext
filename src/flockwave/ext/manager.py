@@ -552,12 +552,44 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension
 
         Returns:
-            module: the module containing the extension with the given name
+            the module containing the extension with the given name
 
         Raises:
             NoSuchExtension: if there is no such extension
         """
         return self.module_finder.get_module_for_extension(extension_name)
+
+    def _get_module_for_extension_safely(
+        self, extension_name: str, *, raise_on_error: bool = True
+    ) -> Optional[ModuleType]:
+        """Returns the module that contains the given extension, logging
+        errors appropriately and returning ``None`` if the extension does not
+        exist.
+
+        Parameters:
+            extension_name: the name of the extension
+            raise_on_error: whether to re-raise exceptions when the import fails
+
+        Returns:
+            the module containing the extension with the given name, or ``None``
+            if there is no such extension with the given name
+        """
+        try:
+            return self.module_finder.get_module_for_extension(extension_name)
+        except NoSuchExtension:
+            base_log.warning(f"No such extension: {extension_name}")
+        except ImportError:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            if raise_on_error:
+                raise
+        except Exception:
+            base_log.exception(
+                "Error while importing extension {0!r}".format(extension_name)
+            )
+            if raise_on_error:
+                raise
 
     def configure(
         self, extension_name: str, configuration: ExtensionConfiguration
@@ -597,16 +629,9 @@ class ExtensionManager(Generic[TApp]):
             the configuration schema of the extension or `None` if the extension
             does not exist or does not provide a configuration schema
         """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
-            base_log.warning(f"No such extension: {extension_name}")
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
             return None
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
 
         func = getattr(module, "get_schema", None)
         if callable(func):
@@ -706,15 +731,9 @@ class ExtensionManager(Generic[TApp]):
             the names of the extensions that the given extension depends on;
             an empty set if the extension does not exist
         """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
             return set()
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
 
         func = getattr(module, "get_dependencies", None)
         if callable(func):
@@ -748,16 +767,9 @@ class ExtensionManager(Generic[TApp]):
             the description of the extension or `None` if the extension does not
             provide a description
         """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
-            base_log.warning(f"No such extension: {extension_name}")
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
             return None
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
 
         func = getattr(module, "get_description", None)
         if callable(func):
@@ -793,16 +805,9 @@ class ExtensionManager(Generic[TApp]):
             the mapping of extension names to enhancements; an empty dictionary
             if the extension does not enhance any other extension
         """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
-            base_log.warning(f"No such extension: {extension_name}")
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
             return {}
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
 
         func = getattr(module, "get_enhancers", None)
         if callable(func):
@@ -870,16 +875,9 @@ class ExtensionManager(Generic[TApp]):
         Returns:
             the tags of the extension
         """
-        try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
-            base_log.warning(f"No such extension: {extension_name}")
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
             return set()
-        except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
-            raise
 
         func = getattr(module, "get_tags", None)
         if callable(func):
@@ -1262,12 +1260,12 @@ class ExtensionManager(Generic[TApp]):
 
         # Find the module for the extension
         try:
-            module = self._get_module_for_extension(extension_name)
-        except NoSuchExtension:
-            log.error(f"No such extension: {extension_name}", extra=extra)
-            return None
-        except ImportError:
-            log.exception("Error while importing extension", extra=extra)
+            module = self._get_module_for_extension_safely(extension_name)
+        except Exception:
+            # logged already in self._get_module_for_extension_safely()
+            module = None
+
+        if module is None:
             return None
 
         # Create the extension instance
