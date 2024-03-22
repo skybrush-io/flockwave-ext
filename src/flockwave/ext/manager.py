@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
-from inspect import iscoroutinefunction
+from inspect import iscoroutinefunction, signature
 from logging import Logger, getLogger
 from trio import open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
@@ -306,11 +306,21 @@ class Enhancement:
         """
         return self.provider if extension_name != self.provider else self.target
 
-    def activate(self, api: "ExtensionAPIProxy") -> None:
+    def activate(self, api: ExtensionAPIProxy, provider: Any) -> None:
+        """Activates the enhancement by calling its activation function with
+        the API of the target extension and the provider extension instance.
+        If the activation function has one argument only, it is called with the
+        API of the target extension only for sake of backwards compatibility.
+        """
         if self.active:
             raise RuntimeError("enhancement is already activated")
 
-        result = self.enhancer(api)
+        sig = signature(self.enhancer)
+        if len(sig.parameters) >= 2:
+            result = self.enhancer(api, provider)
+        else:
+            result = self.enhancer(api)  # type: ignore
+
         if result is None:
             disposer = nop
         elif isinstance(result, AbstractContextManager):
@@ -1371,7 +1381,7 @@ class ExtensionManager(Generic[TApp]):
             api = self._extension_data[enhancement.target].api_proxy
 
             assert api is not None
-            enhancement.activate(api)
+            enhancement.activate(api, extension)
 
         # Spin up the extension
         if self._spinning:
