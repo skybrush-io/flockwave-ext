@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from blinker import Signal
 from contextlib import AbstractContextManager, contextmanager
+from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -259,6 +260,11 @@ class ExtensionData:
         """
         return self.next_configuration is not None
 
+    def _notify_enhanced_by(
+        self, extension_name: str, enhancement: Enhancement
+    ) -> None:
+        self.enhanced_by[extension_name] = enhancement
+
 
 @dataclass
 class Enhancement:
@@ -385,6 +391,13 @@ class ExtensionManager(Generic[TApp]):
     _load_order: MRUContainer[str]
     """Order in which the extensions were loaded."""
 
+    _pending_actions_on_discovery: defaultdict[
+        str, list[Callable[[ExtensionData], None]]
+    ]
+    """Functions to call when an extension with the given name is discovered
+    for the first time.
+    """
+
     _shutting_down: bool
     """Whether the extension manager is shutting down."""
 
@@ -428,6 +441,7 @@ class ExtensionManager(Generic[TApp]):
         self._app_restart_requested_by = set()
         self._extension_data = keydefaultdict(self._create_extension_data)
         self._load_order = MRUContainer()
+        self._pending_actions_on_discovery = defaultdict(list)
         self._silent_mode_entered = 0
         self._spinning = False
 
@@ -527,10 +541,14 @@ class ExtensionManager(Generic[TApp]):
         """
         if not self.exists(extension_name):
             raise NoSuchExtension(extension_name)
-        else:
-            data = ExtensionData.for_extension(extension_name)
-            data.api_proxy = ExtensionAPIProxy(self, extension_name)
-            return data
+
+        data = ExtensionData.for_extension(extension_name)
+        data.api_proxy = ExtensionAPIProxy(self, extension_name)
+
+        for func in self._pending_actions_on_discovery.pop(extension_name, ()):
+            func(data)
+
+        return data
 
     def _get_loaded_extension_by_name(self, extension_name: str) -> Any:
         """Returns the extension object corresponding to the extension
@@ -1133,6 +1151,25 @@ class ExtensionManager(Generic[TApp]):
         await self._task_queue.send((func, args, scope, name))
         return scope
 
+    def _run_when_discovered(
+        self, extension_name: str, func: Callable[[ExtensionData], None]
+    ):
+        """Registers a function to be executed when the extension with the given
+        name is discovered for the first time and its extension data object is
+        created.
+
+        The function is executed immediately if it is already discovered.
+
+        Arguments:
+            extension_name: name of the extension
+            func: function to call
+        """
+        data = self._extension_data.get(extension_name)
+        if data is not None:
+            func(data)
+        else:
+            self._pending_actions_on_discovery[extension_name].append(func)
+
     def rescan(self) -> None:
         """Refreshes the list of extensions known to the extension manager by
         scanning all registered entry points in the extension module finder.
@@ -1333,7 +1370,14 @@ class ExtensionManager(Generic[TApp]):
             log.warn("enhancements must be provided in a dict")
 
         for target, enhancement in extension_data.enhances.items():
-            self._extension_data[target].enhanced_by[extension_name] = enhancement
+            self._run_when_discovered(
+                target,
+                partial(
+                    ExtensionData._notify_enhanced_by,
+                    extension_name=extension_name,
+                    enhancement=enhancement,
+                ),
+            )
 
         # Finalize loading
         extension_data.instance = extension
@@ -1354,12 +1398,16 @@ class ExtensionManager(Generic[TApp]):
         enhancements_to_activate = [
             enhancement
             for other, enhancement in extension_data.enhances.items()
-            if self._extension_data[other].loaded and not enhancement.active
+            if other in self._extension_data
+            and self._extension_data[other].loaded
+            and not enhancement.active
         ]
         enhancements_to_activate.extend(
             enhancement
             for other, enhancement in extension_data.enhanced_by.items()
-            if self._extension_data[other].loaded and not enhancement.active
+            if other in self._extension_data
+            and self._extension_data[other].loaded
+            and not enhancement.active
         )
         for enhancement in enhancements_to_activate:
             log.debug(
