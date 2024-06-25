@@ -495,13 +495,13 @@ class ExtensionManager(Generic[TApp]):
                 # It is not a problem if the extension is not enabled explicitly
                 enabled = self._get_enabled_state_from_configuration(extension_cfg)
                 if enabled.is_explicitly_enabled:
-                    base_log.warning(f"No such extension: {extension_name}")
+                    base_log.warning(f"No such extension: {extension_name!r}")
             except ImportError:
                 # It is not a problem if the extension is disabled anyway
                 enabled = self._get_enabled_state_from_configuration(extension_cfg)
                 if enabled.is_explicitly_enabled:
                     base_log.exception(
-                        f"Error while importing extension: {extension_name}"
+                        f"Error while importing extension: {extension_name!r}"
                     )
 
         # Check the extensions that were originally loaded, and any new
@@ -587,17 +587,13 @@ class ExtensionManager(Generic[TApp]):
         try:
             return self.module_finder.get_module_for_extension(extension_name)
         except NoSuchExtension:
-            base_log.warning(f"No such extension: {extension_name}")
+            base_log.warning(f"No such extension: {extension_name!r}")
         except ImportError:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
+            base_log.exception(f"Error while importing extension {extension_name!r}")
             if raise_on_error:
                 raise
         except Exception:
-            base_log.exception(
-                "Error while importing extension {0!r}".format(extension_name)
-            )
+            base_log.exception(f"Error while importing extension {extension_name!r}")
             if raise_on_error:
                 raise
 
@@ -649,8 +645,8 @@ class ExtensionManager(Generic[TApp]):
                 schema = func()
             except Exception:
                 base_log.exception(
-                    "Error while retrieving configuration schema of "
-                    "extension {0!r}".format(extension_name)
+                    f"Error while retrieving configuration schema of "
+                    f"extension {extension_name!r}"
                 )
                 raise
         else:
@@ -751,8 +747,7 @@ class ExtensionManager(Generic[TApp]):
                 dependencies = func()
             except Exception:
                 base_log.exception(
-                    "Error while determining dependencies of "
-                    "extension {0!r}".format(extension_name)
+                    f"Error while determining dependencies of extension {extension_name!r}"
                 )
                 dependencies = None
         else:
@@ -787,9 +782,7 @@ class ExtensionManager(Generic[TApp]):
                 description = func()
             except Exception:
                 base_log.exception(
-                    "Error while getting the description of extension {0!r}".format(
-                        extension_name
-                    )
+                    f"Error while getting the description of extension {extension_name!r}"
                 )
                 description = None
         elif hasattr(module, "description"):
@@ -825,9 +818,7 @@ class ExtensionManager(Generic[TApp]):
                 enhancers = func()
             except Exception:
                 base_log.exception(
-                    "Error while getting the enhancers of extension {0!r}".format(
-                        extension_name
-                    )
+                    f"Error while getting the enhancers of extension {extension_name!r}"
                 )
                 enhancers = {}
         elif hasattr(module, "enhancers"):
@@ -895,9 +886,7 @@ class ExtensionManager(Generic[TApp]):
                 tags = func()
             except Exception:
                 base_log.exception(
-                    "Error while getting the tags of extension {0!r}".format(
-                        extension_name
-                    )
+                    f"Error while getting the tags of extension {extension_name!r}"
                 )
                 tags = ()
         else:
@@ -938,7 +927,7 @@ class ExtensionManager(Generic[TApp]):
         """
         proxy = self._extension_data[extension_name].api_proxy
         if proxy is None:
-            raise RuntimeError("Extension {extension_name} does not have an API")
+            raise RuntimeError(f"Extension {extension_name!r} does not have an API")
         return proxy
 
     def get_enabled_state_of_extension(self, extension_name: str) -> EnabledState:
@@ -1258,7 +1247,7 @@ class ExtensionManager(Generic[TApp]):
             extension_name: the name of the extension to load
         """
         if extension_name in ("logger", "manager", "base", "__init__"):
-            raise ValueError("invalid extension name: {0!r}".format(extension_name))
+            raise ValueError(f"invalid extension name: {extension_name!r}")
 
         log = base_log
         extra = {"id": extension_name}
@@ -1432,9 +1421,7 @@ class ExtensionManager(Generic[TApp]):
                 self._on_extension_not_loadable(extension_name, str(exc))
         else:
             base_log.exception(
-                "Unexpected exception caught from extension {0!r}".format(
-                    extension_name
-                )
+                f"Unexpected exception caught from extension {extension_name!r}"
             )
 
         await self.unload(extension_name)
@@ -1580,9 +1567,8 @@ class ExtensionManager(Generic[TApp]):
         extension_data = self._extension_data[extension_name]
         if extension_data.dependents:
             message = (
-                "Failed to unload extension {0!r} because it is still in use".format(
-                    extension_name
-                )
+                f"Failed to unload extension {extension_name!r} because it is "
+                f"still in use"
             )
             raise RuntimeError(message)
 
@@ -1639,7 +1625,7 @@ class ExtensionManager(Generic[TApp]):
                 if not self.shutting_down:
                     log.error("This extension cannot be unloaded", extra=extra)
                     raise NotSupportedError(
-                        f"Extension {extension_name} cannot be unloaded"
+                        f"Extension {extension_name!r} cannot be unloaded"
                     ) from None
             except Exception:
                 clean_unload = False
@@ -1781,10 +1767,12 @@ class ExtensionAPIProxy:
         self._extension_name = extension_name
         self._manager = manager
         self._manager.loaded.connect(
-            self._on_extension_loaded, sender=self._manager  # type: ignore
+            self._on_extension_loaded,
+            sender=self._manager,  # type: ignore
         )
         self._manager.unloaded.connect(
-            self._on_extension_unloaded, sender=self._manager  # type: ignore
+            self._on_extension_unloaded,
+            sender=self._manager,  # type: ignore
         )
 
         loaded = self._manager.is_loaded(extension_name)
@@ -1814,8 +1802,8 @@ class ExtensionAPIProxy:
             api = api()
         if not hasattr(api, "__getitem__"):
             raise TypeError(
-                "exports of extension {0!r} must support item "
-                "access with the [] operator".format(extension_name)
+                f"exports of extension {extension_name!r} must support item "
+                f"access with the [] operator"
             )
         return api
 

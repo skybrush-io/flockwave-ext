@@ -80,5 +80,4 @@ class Enhancer(Protocol):
 
     def __call__(
         self, api: ExtensionAPIProxy, provider: Optional[Any] = None
-    ) -> Optional[Union[Disposer, AbstractContextManager[None]]]:
-        ...
+    ) -> Optional[Union[Disposer, AbstractContextManager[None]]]: ...

@@ -183,22 +183,19 @@ def nop(*args, **kwds) -> None:
 @overload
 def protected(
     handler: Logger,
-) -> Callable[[Callable[..., T]], Callable[..., Optional[T]]]:
-    ...
+) -> Callable[[Callable[..., T]], Callable[..., Optional[T]]]: ...
 
 
 @overload
 def protected(
-    handler: Callable[[BaseException], T2]
-) -> Callable[[Callable[..., T]], Callable[..., Union[T, T2]]]:
-    ...
+    handler: Callable[[BaseException], T2],
+) -> Callable[[Callable[..., T]], Callable[..., Union[T, T2]]]: ...
 
 
 @overload
 def protected(
-    handler: Callable[[BaseException], Awaitable[T2]]
-) -> Callable[[Callable[..., T]], Callable[..., Awaitable[Union[T, T2]]]]:
-    ...
+    handler: Callable[[BaseException], Awaitable[T2]],
+) -> Callable[[Callable[..., T]], Callable[..., Awaitable[Union[T, T2]]]]: ...
 
 
 def protected(handler) -> Any:
