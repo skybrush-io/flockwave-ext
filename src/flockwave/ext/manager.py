@@ -8,8 +8,10 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
+from importlib_metadata import version as get_version_from_metadata
 from inspect import iscoroutinefunction, signature
 from logging import Logger, getLogger
+from semver import Version
 from trio import open_memory_channel, open_nursery, TASK_STATUS_IGNORED
 from trio.abc import SendChannel
 from types import ModuleType
@@ -22,6 +24,7 @@ from typing import (
     Iterator,
     Optional,
     TypeVar,
+    Union,
 )
 
 from .base import Configuration, ExtensionBase, TApp
@@ -914,6 +917,78 @@ class ExtensionManager(Generic[TApp]):
             return set(tags.split())
         else:
             return {str(tag) for tag in tags}
+
+    def get_version_of_extension(self, extension_name: str) -> Optional[Version]:
+        """Returns the version number of the extension with the given name (if
+        the extension provides a version number).
+
+        An extension may provide a version number by defining a `get_version`
+        attribute (which must be a function that can be called with no arguments
+        and must return a string or a `semver.Version` object), a `version`
+        attribute (which must be a string or a `semver.Version` object) or a
+        `__version__` attribute (for sake of compatibility with typical Python
+        modules). In the absence of these attributes, the version will be derived
+        from the version metadata of the module providing the extension. When
+        all these attempts to derive a version number fails, the result will be
+        ``None``.
+
+        Parameters:
+            extension_name: the name of the extension
+
+        Returns:
+            the version of the extension or `None` if the extension does not
+            provide a version number
+        """
+        module = self._get_module_for_extension_safely(extension_name)
+        if module is None:
+            return None
+
+        func = getattr(module, "get_version", None)
+        maybe_version: Optional[Union[str, Version]] = None
+
+        try:
+            if callable(func):
+                maybe_version = func()
+            elif hasattr(module, "version") or hasattr(module, "__version__"):
+                maybe_version = getattr(module, "version", None) or getattr(
+                    module, "__version__", None
+                )
+
+                # version or __version__ may also be a Python module
+                if isinstance(maybe_version, ModuleType):
+                    maybe_version = getattr(maybe_version, "version", None) or getattr(
+                        maybe_version, "__version__", None
+                    )
+
+        except Exception:
+            base_log.exception(
+                f"Error while getting the version of extension {extension_name!r}"
+            )
+
+        if maybe_version is None:
+            try:
+                module_name = self.module_finder.get_module_name_for_extension(
+                    extension_name
+                )
+                maybe_version = get_version_from_metadata(module_name)
+            except Exception:
+                pass
+
+        try:
+            return (
+                Version.parse(str(maybe_version)) if maybe_version is not None else None
+            )
+        except ValueError:
+            # Not a valid semantic version
+            base_log.error(
+                f"Version of extension {extension_name!r} is not a semantic version number: {maybe_version!r}"
+            )
+            return None
+        except Exception:
+            base_log.exception(
+                f"Error while parsing the version of extension {extension_name!r}"
+            )
+            return None
 
     def import_api(self, extension_name: str) -> ExtensionAPIProxy:
         """Imports the API exposed by an extension.

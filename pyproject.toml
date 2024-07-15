@@ -3,19 +3,19 @@ name = "flockwave-ext"
 version = "1.25.1"
 description = "Generic extension manager for Skybrush-related projects"
 authors = ["Tamas Nepusz <tamas@collmot.com>"]
-packages = [
-    { include = "flockwave", from = "src" }
-]
+packages = [{ include = "flockwave", from = "src" }]
 license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.9"
 blinker = "^1.6.2"
 trio = ">=0.21.0"
+importlib-metadata = "^8.0.0"
+semver = "^3.0.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
-coverage = {extras = ["toml"], version = "^7.2.7"}
+coverage = { extras = ["toml"], version = "^7.2.7" }
 pytest-cov = "^4.1.0"
 
 [[tool.poetry.source]]
