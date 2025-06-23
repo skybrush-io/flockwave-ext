@@ -1,22 +1,22 @@
-[tool.poetry]
+[project]
 name = "flockwave-ext"
 version = "1.26.0"
 description = "Generic extension manager for Skybrush-related projects"
-authors = ["Tamas Nepusz <tamas@collmot.com>"]
-packages = [{ include = "flockwave", from = "src" }]
+authors = [{ name = "Tamas Nepusz", email = "tamas@collmot.com" }]
 license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+  "blinker (>=1.9.0)",
+  "trio >= 0.30.0",
+  "importlib-metadata (>=8.7.0)",
+  "semver (>=3.0.4)",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-blinker = "^1.6.2"
-trio = ">=0.21.0"
-importlib-metadata = "^8.0.0"
-semver = "^3.0.2"
+[project.optional-dependencies]
+dev = ["pytest (>=8.4.1)", "coverage[toml] (>=7.9.1)", "pytest-cov (>=6.2.1)"]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.4.0"
-coverage = { extras = ["toml"], version = "^7.2.7" }
-pytest-cov = "^4.1.0"
+[tool.poetry]
+packages = [{ include = "flockwave", from = "src" }]
 
 [[tool.poetry.source]]
 name = "PyPI"
@@ -47,5 +47,5 @@ lint.ignore = ["B905", "C901", "E402", "E501"]
 lint.select = ["B", "C", "E", "F", "W"]
 
 [build-system]
-requires = ["poetry>=0.12"]
-build-backend = "poetry.masonry.api"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
