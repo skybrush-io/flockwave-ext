@@ -2,17 +2,17 @@
 
 from contextlib import asynccontextmanager
 from logging import Logger
-from trio import Lock, Nursery, open_nursery, WouldBlock
 from typing import (
     Any,
     AsyncIterator,
     Awaitable,
     Callable,
     Generic,
-    Optional,
     TypeVar,
 )
 from warnings import warn
+
+from trio import Lock, Nursery, WouldBlock, open_nursery
 
 from .utils import get_name_of_function
 
@@ -28,16 +28,16 @@ TApp = TypeVar("TApp")
 class ExtensionBase(Generic[TApp]):
     """Interface specification for Flockwave extensions."""
 
-    _app: Optional[TApp] = None
+    _app: TApp | None = None
     """The application hosting the extension."""
 
-    _nursery: Optional[Nursery] = None
+    _nursery: Nursery | None = None
     """A nursery that the extension may use to spawn subtasks in."""
 
     _nursery_lock: Lock
     """Lock to prevent concurrent access to the ``_nursery`` property."""
 
-    log: Optional[Logger] = None
+    log: Logger | None = None
     """Logger that the extension may use to write log messages to."""
 
     name: str = ""
@@ -50,12 +50,12 @@ class ExtensionBase(Generic[TApp]):
         self._nursery_lock = Lock()
 
     @property
-    def app(self) -> Optional[TApp]:
+    def app(self) -> TApp | None:
         """The application that the extension is attached to."""
         return self._app
 
     @app.setter
-    def app(self, value: Optional[TApp]) -> None:
+    def app(self, value: TApp | None) -> None:
         old_value = self._app
         self._app = value
         self.on_app_changed(old_value, self._app)
@@ -89,7 +89,7 @@ class ExtensionBase(Generic[TApp]):
         self.log = logger
         self.configure(configuration)
 
-    def on_app_changed(self, old_app: Optional[TApp], new_app: Optional[TApp]) -> None:
+    def on_app_changed(self, old_app: TApp | None, new_app: TApp | None) -> None:
         """Handler that is called when the extension is associated to an
         application or detached from an application.
 

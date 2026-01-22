@@ -1,15 +1,14 @@
 from collections import defaultdict
-from functools import partial as partial_, wraps
-from inspect import iscoroutinefunction, Parameter, signature
+from functools import partial as partial_
+from functools import wraps
+from inspect import Parameter, iscoroutinefunction, signature
 from logging import Logger
 from typing import (
     Any,
     Awaitable,
     Callable,
-    Optional,
     Sequence,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -88,7 +87,7 @@ class AwaitableCancelScope:
             self.notify_processed()
 
 
-def bind(func, args: Optional[Sequence[Any]] = None, kwds=None, *, partial=False):
+def bind(func, args: Sequence[Any] | None = None, kwds=None, *, partial=False):
     """Variant of `functools.partial()` that allows the argument list to
     be longer than the number of arguments accepted by the function if
     `partial` is set to `True`. If this is the case, the argument list
@@ -160,9 +159,9 @@ class keydefaultdict(defaultdict[K, V]):
     to the default factory.
     """
 
-    default_factory: Optional[Callable[[K], V]] = None
+    default_factory: Callable[[K], V] | None = None
 
-    def __init__(self, factory: Optional[Callable[[K], V]] = None):
+    def __init__(self, factory: Callable[[K], V] | None = None):
         self.default_factory = factory
 
     def __missing__(self, key):
@@ -183,19 +182,19 @@ def nop(*args, **kwds) -> None:
 @overload
 def protected(
     handler: Logger,
-) -> Callable[[Callable[..., T]], Callable[..., Optional[T]]]: ...
+) -> Callable[[Callable[..., T]], Callable[..., T | None]]: ...
 
 
 @overload
 def protected(
     handler: Callable[[BaseException], T2],
-) -> Callable[[Callable[..., T]], Callable[..., Union[T, T2]]]: ...
+) -> Callable[[Callable[..., T]], Callable[..., T | T2]]: ...
 
 
 @overload
 def protected(
     handler: Callable[[BaseException], Awaitable[T2]],
-) -> Callable[[Callable[..., T]], Callable[..., Awaitable[Union[T, T2]]]]: ...
+) -> Callable[[Callable[..., T]], Callable[..., Awaitable[T | T2]]]: ...
 
 
 def protected(handler) -> Any:
@@ -224,13 +223,13 @@ def protected(handler) -> Any:
     else:
         real_handler = handler
 
-    def decorator(func: Callable[..., T]) -> Callable[..., Optional[T]]:
+    def decorator(func: Callable[..., T]) -> Callable[..., T | None]:
         if iscoroutinefunction(func):
 
             @wraps(func)
             async def decorated_async(*args, **kwds):
                 try:
-                    return await func(*args, **kwds)  # type: ignore
+                    return await func(*args, **kwds)
                 except Exception as ex:
                     if iscoroutinefunction(real_handler):
                         return await real_handler(ex)

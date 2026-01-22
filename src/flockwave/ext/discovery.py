@@ -3,14 +3,12 @@ managed by an extension manager.
 """
 
 from importlib import import_module
+from importlib.metadata import EntryPoint, entry_points
 from pkgutil import get_loader
 from types import ModuleType
 from typing import Iterable, Iterator
 
-from importlib_metadata import entry_points, EntryPoint
-
 from .errors import NoSuchExtension
-
 
 __all__ = ("ExtensionModuleFinder",)
 
@@ -167,4 +165,4 @@ class ExtensionModuleFinder:
         for entry_point_group in self._entry_point_groups:
             for entry_point in _iter_entry_points_in_group(entry_point_group):
                 if entry_point.name == name:
-                    yield entry_point.value  # type: ignore
+                    yield entry_point.value

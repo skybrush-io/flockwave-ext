@@ -3,12 +3,10 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
-    Optional,
     Protocol,
-    TYPE_CHECKING,
-    Union,
 )
 
 if TYPE_CHECKING:
@@ -79,5 +77,5 @@ class Enhancer(Protocol):
     """Type specification for extension enhancer functions."""
 
     def __call__(
-        self, api: ExtensionAPIProxy, provider: Optional[Any] = None
-    ) -> Optional[Union[Disposer, AbstractContextManager[None]]]: ...
+        self, api: ExtensionAPIProxy, provider: Any | None = None
+    ) -> Disposer | AbstractContextManager[None] | None: ...

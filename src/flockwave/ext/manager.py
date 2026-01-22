@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from blinker import Signal
-from contextlib import AbstractContextManager, contextmanager
 from collections import defaultdict
+from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
-from importlib_metadata import version as get_version_from_metadata
+from importlib.metadata import version as get_version_from_metadata
 from inspect import iscoroutinefunction, signature
 from logging import Logger, getLogger
-from semver import Version
-from trio import open_memory_channel, open_nursery, TASK_STATUS_IGNORED
-from trio.abc import SendChannel
 from types import ModuleType
 from typing import (
     Any,
@@ -22,10 +18,13 @@ from typing import (
     Generic,
     Iterable,
     Iterator,
-    Optional,
     TypeVar,
-    Union,
 )
+
+from blinker import Signal
+from semver import Version
+from trio import TASK_STATUS_IGNORED, open_memory_channel, open_nursery
+from trio.abc import SendChannel
 
 from .base import Configuration, ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
@@ -64,9 +63,9 @@ ExtensionConfigurationSchema = dict[str, Any]
 class Node(Generic[T]):
     """Single node in a linked list, used by MRUContainer_."""
 
-    next: "Node[T]" = field(init=False)
-    prev: "Node[T]" = field(init=False)
-    data: Optional[T] = None
+    next: Node[T] = field(init=False)
+    prev: Node[T] = field(init=False)
+    data: T | None = None
 
     def __post_init__(self):
         self.next = self.prev = self
@@ -116,11 +115,9 @@ class MRUContainer(Generic[T]):
         If the object is already in the container, it is moved to the end of
         the container.
         """
-        assert item is not None
-
         node = self._dict.get(item)
         if not node:
-            node = self._dict[item] = Node(item)
+            self._dict[item] = node = Node(item)
         else:
             self._unlink_node(node)
 
@@ -166,7 +163,7 @@ class ExtensionData:
     name: str
     """The name of the extension."""
 
-    api_proxy: Optional[ExtensionAPIProxy] = None
+    api_proxy: ExtensionAPIProxy | None = None
     """The API object that the extension exports."""
 
     configuration: ExtensionConfiguration = field(default_factory=dict)
@@ -189,7 +186,7 @@ class ExtensionData:
     See the ``enhances`` property for ownership rules.
     """
 
-    instance: Optional[object] = None
+    instance: object | None = None
     """The loaded instance of the extension; ``None`` if the extension is
     not loaded.
     """
@@ -197,10 +194,10 @@ class ExtensionData:
     loaded: bool = False
     """Whether the extension is loaded."""
 
-    log: Optional[Logger] = None
+    log: Logger | None = None
     """The logger associated to the extension."""
 
-    next_configuration: Optional[ExtensionConfiguration] = None
+    next_configuration: ExtensionConfiguration | None = None
     """The next configuration object of the extension that will be
     activated when the extension is loaded the next time.
     """
@@ -210,12 +207,12 @@ class ExtensionData:
     itself.
     """
 
-    task: Optional[AwaitableCancelScope] = None
+    task: AwaitableCancelScope | None = None
     """A cancellation scope for the background task that was spawned for the
     extension when it was loaded, or `None` if no such task was spawned.
     """
 
-    worker: Optional[AwaitableCancelScope] = None
+    worker: AwaitableCancelScope | None = None
     """A cancellation scope for the worker task that was spawned for the
     extension when the first client connected to the server, or ``None`` if no
     such worker was spawned or there are no clients connected.
@@ -295,7 +292,7 @@ class Enhancement:
     target: str = ""
     """Name of the extension that the enhancement _targets_."""
 
-    disposer: Optional[Disposer] = None
+    disposer: Disposer | None = None
     """Disposer function to call when any of the two extensions involved are
     unloaded. ``None`` means that the enhancement is not active yet because
     at least one of the extensions involved is not loaded.
@@ -328,7 +325,7 @@ class Enhancement:
         if len(sig.parameters) >= 2:
             result = self.enhancer(api, provider)
         else:
-            result = self.enhancer(api)  # type: ignore
+            result = self.enhancer(api)
 
         if result is None:
             disposer = nop
@@ -341,7 +338,7 @@ class Enhancement:
         else:
             disposer = result
 
-        self.disposer = disposer  # type: ignore
+        self.disposer = disposer
 
     def deactivate(self) -> None:
         if not self.active:
@@ -380,7 +377,7 @@ class ExtensionManager(Generic[TApp]):
     names.
     """
 
-    _app: Optional[TApp]
+    _app: TApp | None
     """The application that owns the extension manager."""
 
     _app_restart_requested_by: set[str]
@@ -414,18 +411,17 @@ class ExtensionManager(Generic[TApp]):
     the `spinning` property for more details.
     """
 
-    _task_queue: Optional[
+    _task_queue: (
         SendChannel[
-            tuple[
-                Callable[..., Any], Any, Optional[AwaitableCancelScope], Optional[str]
-            ]
+            tuple[Callable[..., Any], Any, AwaitableCancelScope | None, str | None]
         ]
-    ]
+        | None
+    )
     """Queue containing background tasks to be spawned and their associated names
     and cancel scopes.
     """
 
-    def __init__(self, package_root: Optional[str] = None):
+    def __init__(self, package_root: str | None = None):
         """Constructor.
 
         Parameters:
@@ -449,7 +445,7 @@ class ExtensionManager(Generic[TApp]):
         self._spinning = False
 
     @property
-    def app(self) -> Optional[TApp]:
+    def app(self) -> TApp | None:
         """The application context of the extension manager. This will also
         be passed on to the extensions when they are initialized.
         """
@@ -462,7 +458,7 @@ class ExtensionManager(Generic[TApp]):
         """
         return bool(self._app_restart_requested_by)
 
-    async def set_app(self, value: Optional[TApp]) -> None:
+    async def set_app(self, value: TApp | None) -> None:
         """Asynchronous setter for the application context of the
         extension manager.
         """
@@ -592,7 +588,7 @@ class ExtensionManager(Generic[TApp]):
 
     def _get_module_for_extension_safely(
         self, extension_name: str, *, raise_on_error: bool = True
-    ) -> Optional[ModuleType]:
+    ) -> ModuleType | None:
         """Returns the module that contains the given extension, logging
         errors appropriately and returning ``None`` if the extension does not
         exist.
@@ -644,7 +640,7 @@ class ExtensionManager(Generic[TApp]):
 
     def get_configuration_schema(
         self, extension_name: str
-    ) -> Optional[ExtensionConfigurationSchema]:
+    ) -> ExtensionConfigurationSchema | None:
         """Returns a JSON-Schema description of the expected format of the
         configuration of the given extension, if the extension provides one.
 
@@ -776,7 +772,7 @@ class ExtensionManager(Generic[TApp]):
 
         return set(dependencies or [])
 
-    def get_description_of_extension(self, extension_name: str) -> Optional[str]:
+    def get_description_of_extension(self, extension_name: str) -> str | None:
         """Returns a human-readable description of the extension with the given
         name (if the extension provides a description).
 
@@ -918,7 +914,7 @@ class ExtensionManager(Generic[TApp]):
         else:
             return {str(tag) for tag in tags}
 
-    def get_version_of_extension(self, extension_name: str) -> Optional[Version]:
+    def get_version_of_extension(self, extension_name: str) -> Version | None:
         """Returns the version number of the extension with the given name (if
         the extension provides a version number).
 
@@ -944,7 +940,7 @@ class ExtensionManager(Generic[TApp]):
             return None
 
         func = getattr(module, "get_version", None)
-        maybe_version: Optional[Union[str, Version]] = None
+        maybe_version: str | Version | None = None
 
         try:
             if callable(func):
@@ -1208,9 +1204,9 @@ class ExtensionManager(Generic[TApp]):
         self,
         func: Callable[..., Any],
         *args,
-        name: Optional[str] = None,
+        name: str | None = None,
         cancellable: bool = False,
-    ) -> Optional[AwaitableCancelScope]:
+    ) -> AwaitableCancelScope | None:
         """Runs the given function as a background task in the extension
         manager.
 
@@ -1429,7 +1425,7 @@ class ExtensionManager(Generic[TApp]):
                 name=f"extension:{extension_name}/run",
             )
         elif task is not None:
-            log.warn("run() must be an async function", extra=extra)
+            log.warning("run() must be an async function", extra=extra)
 
         # Register enhancements
         enhances = self.get_enhancements_of_extension(extension_name)
@@ -1502,7 +1498,7 @@ class ExtensionManager(Generic[TApp]):
         return result
 
     def _on_extension_not_loadable(
-        self, extension_name: str, message: Optional[str] = None
+        self, extension_name: str, message: str | None = None
     ) -> None:
         """Logs a message that indicates that the extension with the given name
         cannot be loaded.
@@ -1551,7 +1547,7 @@ class ExtensionManager(Generic[TApp]):
 
     def _protect_extension_task(
         self, func: Callable[..., Awaitable[T]], extension_name: str
-    ) -> Callable[..., Awaitable[Optional[T]]]:
+    ) -> Callable[..., Awaitable[T | None]]:
         """Given a main asynchronous task corresponding to an extension,
         returns another async task that handles exceptions coming from the
         task gracefully, without crashing the extension manager.
@@ -1644,7 +1640,7 @@ class ExtensionManager(Generic[TApp]):
                 name=f"extension:{extension_name}/worker",
             )
         elif task is not None:
-            base_log.warn(
+            base_log.warning(
                 "worker() must be an async function", extra={"id": extension_name}
             )
 
@@ -1891,11 +1887,11 @@ class ExtensionAPIProxy:
         self._manager = manager
         self._manager.loaded.connect(
             self._on_extension_loaded,
-            sender=self._manager,  # type: ignore
+            sender=self._manager,
         )
         self._manager.unloaded.connect(
             self._on_extension_unloaded,
-            sender=self._manager,  # type: ignore
+            sender=self._manager,
         )
 
         loaded = self._manager.is_loaded(extension_name)
