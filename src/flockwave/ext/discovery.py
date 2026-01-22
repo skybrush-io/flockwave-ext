@@ -4,7 +4,7 @@ managed by an extension manager.
 
 from importlib import import_module
 from importlib.metadata import EntryPoint, entry_points
-from pkgutil import get_loader
+from importlib.util import find_spec
 from types import ModuleType
 from typing import Iterable, Iterator
 
@@ -129,7 +129,7 @@ class ExtensionModuleFinder:
         result = self._module_name_cache.get(name)
         if not result:
             for candidate in self._iter_module_name_candidates_for_extension(name):
-                loader = get_loader(candidate)
+                loader = find_spec(candidate)
                 if loader is not None:
                     result = candidate
                     break
