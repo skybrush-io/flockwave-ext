@@ -1013,6 +1013,7 @@ class ExtensionManager(Generic[TApp]):
 
         Raises:
             KeyError: if the extension with the given name does not exist
+            RuntimeError: if the extension does not have an API
         """
         proxy = self._extension_data[extension_name].api_proxy
         if proxy is None:
