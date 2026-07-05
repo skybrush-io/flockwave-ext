@@ -1,13 +1,11 @@
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Sequence
 from functools import partial as partial_
 from functools import wraps
 from inspect import Parameter, iscoroutinefunction, signature
 from logging import Logger
 from typing import (
     Any,
-    Awaitable,
-    Callable,
-    Sequence,
     TypeVar,
     overload,
 )
@@ -179,6 +177,20 @@ def nop(*args, **kwds) -> None:
     pass
 
 
+def _derive_real_handler(
+    handler: Callable[[BaseException], Any] | Logger,
+) -> Callable[[BaseException], Any]:
+    if isinstance(handler, Logger):
+        log = handler
+
+        def log_exception(_: BaseException) -> None:
+            log.exception("Unexpected exception caught")
+
+        return log_exception
+    else:
+        return handler
+
+
 @overload
 def protected(
     handler: Logger,
@@ -197,7 +209,7 @@ def protected(
 ) -> Callable[[Callable[..., T]], Callable[..., Awaitable[T | T2]]]: ...
 
 
-def protected(handler) -> Any:
+def protected(handler: Callable[[BaseException], Any] | Logger) -> Any:
     """Decorator factory that creates a decorator that decorates a function and
     ensures that the exceptions do not propagate out from the function.
 
@@ -210,18 +222,7 @@ def protected(handler) -> Any:
         handler: the handler function to call when an exception happens in the
             decorated function, or a logger to log the exception to
     """
-
-    real_handler: Callable[[BaseException], Any]
-
-    if isinstance(handler, Logger):
-        log = handler
-
-        def log_exception(_: BaseException) -> Any:
-            log.exception("Unexpected exception caught")
-
-        real_handler = log_exception
-    else:
-        real_handler = handler
+    real_handler = _derive_real_handler(handler)
 
     def decorator(func: Callable[..., T]) -> Callable[..., T | None]:
         if iscoroutinefunction(func):

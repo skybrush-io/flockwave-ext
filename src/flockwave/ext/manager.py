@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -13,11 +14,7 @@ from logging import Logger, getLogger
 from types import ModuleType
 from typing import (
     Any,
-    Awaitable,
-    Callable,
     Generic,
-    Iterable,
-    Iterator,
     TypeVar,
 )
 
@@ -764,7 +761,8 @@ class ExtensionManager(Generic[TApp]):
                 dependencies = func()
             except Exception:
                 base_log.exception(
-                    f"Error while determining dependencies of extension {extension_name!r}"
+                    f"Error while determining dependencies of extension "
+                    f"{extension_name!r}"
                 )
                 dependencies = None
         else:
@@ -799,7 +797,8 @@ class ExtensionManager(Generic[TApp]):
                 description = func()
             except Exception:
                 base_log.exception(
-                    f"Error while getting the description of extension {extension_name!r}"
+                    f"Error while getting the description of extension "
+                    f"{extension_name!r}"
                 )
                 description = None
         elif hasattr(module, "description"):
@@ -968,7 +967,10 @@ class ExtensionManager(Generic[TApp]):
                 )
                 maybe_version = get_version_from_metadata(module_name)
             except Exception:
-                pass
+                base_log.warning(
+                    f"Error while getting the version of extension {extension_name!r} "
+                    f"from its module metadata"
+                )
 
         try:
             return (
@@ -977,7 +979,8 @@ class ExtensionManager(Generic[TApp]):
         except ValueError:
             # Not a valid semantic version
             base_log.error(
-                f"Version of extension {extension_name!r} is not a semantic version number: {maybe_version!r}"
+                f"Version of extension {extension_name!r} is not a semantic version "
+                f"number: {maybe_version!r}"
             )
             return None
         except Exception:
@@ -1253,7 +1256,10 @@ class ExtensionManager(Generic[TApp]):
             except Exception:
                 # doesn't matter; probably it is not an extension or the
                 # extension bailed out during import
-                pass
+                base_log.warning(
+                    f"{name!r} is returned as a possible extension name "
+                    "but it is not an extension"
+                )
 
     @property
     def shutting_down(self) -> bool:
@@ -1344,7 +1350,7 @@ class ExtensionManager(Generic[TApp]):
             await self._load_single_extension(extension_name)
             history.append(extension_name)
 
-    async def _load_single_extension(self, extension_name: str):
+    async def _load_single_extension(self, extension_name: str):  # noqa: C901
         """Loads an extension with the given name, assuming that all its
         dependencies are already loaded.
 
@@ -1393,7 +1399,7 @@ class ExtensionManager(Generic[TApp]):
                 extension.name = extension_name
             except Exception:
                 # Maybe the property is used by the extension for something else?
-                pass
+                log.warning("Cannot set name of extension", extra=extra)
 
         args = (self.app, configuration, extension_data.log)
 
@@ -1672,7 +1678,7 @@ class ExtensionManager(Generic[TApp]):
             await self._unload_single_extension(extension_name)
             history.append(extension_name)
 
-    async def _unload_single_extension(self, extension_name: str) -> None:
+    async def _unload_single_extension(self, extension_name: str) -> None:  # noqa: C901
         log = base_log
         extra = {"id": extension_name}
 
@@ -1706,7 +1712,8 @@ class ExtensionManager(Generic[TApp]):
                 if enhancement.active:
                     enhancement.deactivate()
                     log.debug(
-                        f"Deactivated enhancement for {enhancement.other(extension_name)!r}",
+                        f"Deactivated enhancement for "
+                        f"{enhancement.other(extension_name)!r}",
                         extra=extra,
                     )
             except Exception:
@@ -1851,7 +1858,7 @@ class ExtensionManager(Generic[TApp]):
         if extension_name in forbidden:
             cycle = forbidden + [extension_name]
             base_log.error(
-                "Dependency cycle detected: {0}".format(" -> ".join(map(str, cycle)))
+                "Dependency cycle detected: {}".format(" -> ".join(map(str, cycle)))
             )
             return False
         return True

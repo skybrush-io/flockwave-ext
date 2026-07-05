@@ -1,12 +1,10 @@
 """Base class for extensions."""
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
 from typing import (
     Any,
-    AsyncIterator,
-    Awaitable,
-    Callable,
     Generic,
     TypeVar,
 )

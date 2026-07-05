@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Protocol,
 )
 

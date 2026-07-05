@@ -38,9 +38,19 @@ source = ["src"]
 show_missing = true
 
 [tool.ruff]
-lint.ignore = ["B905", "C901", "E402", "E501"]
-lint.select = ["B", "C", "E", "F", "I", "W"]
+lint.ignore = [
+  "S101", # assert
+]
+lint.select = [
+  "B", # flake8-bugbear
+  "C", # flake8-comprehensions
+  "E", # pycodestyle errors
+  "F", # pyflakes
+  "I", # isort
+  "S", # flake8-bandit
+  "W", # pycodestyle warnings
+]
 
 [build-system]
-requires = ["uv_build>=0.9.0"]
+requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"

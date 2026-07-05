@@ -2,11 +2,11 @@
 managed by an extension manager.
 """
 
+from collections.abc import Iterable, Iterator
 from importlib import import_module
 from importlib.metadata import EntryPoint, entry_points
 from importlib.util import find_spec
 from types import ModuleType
-from typing import Iterable, Iterator
 
 from .errors import NoSuchExtension
 
