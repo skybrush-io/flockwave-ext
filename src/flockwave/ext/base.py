@@ -14,13 +14,11 @@ from trio import Lock, Nursery, WouldBlock, open_nursery
 
 from .utils import get_name_of_function
 
-__all__ = ("ExtensionBase",)
-
-
-Configuration = dict[str, Any]
+__all__ = ("ExtensionBase", "TypedConfigExtensionBase")
 
 
 TApp = TypeVar("TApp")
+TConfig = TypeVar("TConfig")
 
 
 class ExtensionBase(Generic[TApp]):
@@ -58,7 +56,7 @@ class ExtensionBase(Generic[TApp]):
         self._app = value
         self.on_app_changed(old_value, self._app)
 
-    def configure(self, configuration: Configuration) -> None:
+    def configure(self, configuration: Any) -> None:
         """Configures the extension with the given configuration object.
 
         This method is called only once from :meth:`load()`_ during the
@@ -66,10 +64,14 @@ class ExtensionBase(Generic[TApp]):
 
         The default implementation of this method is empty. There is no
         need to call the superclass when you override it.
+
+        When the extension declares its configuration schema with a Pydantic
+        model class, the configuration object passed here is the validated model
+        instance instead of the raw configuration dictionary.
         """
         pass
 
-    def load(self, app: TApp, configuration: Configuration, logger: Logger) -> None:
+    def load(self, app: TApp, configuration: Any, logger: Logger) -> None:
         """Handler that is called by the extension manager when the
         extension is loaded into the application.
 
@@ -78,8 +80,10 @@ class ExtensionBase(Generic[TApp]):
 
         Arguments:
             app: the application
-            configuration: the extension-specific configuration dictionary of
-                the application
+            configuration: the extension-specific configuration object of the
+                application. This is typically a dictionary, but it may also be
+                a validated Pydantic model instance when the extension declares
+                its schema with a Pydantic model class.
             logger: a logger object that the extension may use to write to the
                 application log
         """
@@ -262,3 +266,20 @@ class ExtensionBase(Generic[TApp]):
                     "Unexpected exception caught from background task "
                     + get_name_of_function(func)
                 )
+
+
+class TypedConfigExtensionBase(ExtensionBase[TApp], Generic[TApp, TConfig]):
+    """Typed base class for extensions with validated configuration objects."""
+
+    config: TConfig | None = None
+    """The validated configuration object currently active in the extension."""
+
+    def load(self, app: TApp, configuration: TConfig, logger: Logger) -> None:
+        self.config = configuration
+        super().load(app, configuration, logger)
+
+    def unload(self, app: TApp) -> None:
+        try:
+            super().unload(app)
+        finally:
+            self.config = None

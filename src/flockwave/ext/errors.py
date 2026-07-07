@@ -2,6 +2,8 @@ __all__ = (
     "ExtensionError",
     "ApplicationExit",
     "ApplicationRestart",
+    "InvalidConfigurationError",
+    "InvalidConfigurationSchemaError",
     "NoSuchExtension",
     "NotLoadableError",
     "NotSupportedError",
@@ -26,6 +28,20 @@ class ApplicationRestart(ExtensionError):
     """Special exception that can be thrown from the `load()`, `unload()` or
     `run()` methods of an extension to request the host application to
     restart itself.
+    """
+
+    pass
+
+
+class InvalidConfigurationError(ExtensionError):
+    """Error thrown when the configuration of an extension is invalid."""
+
+    pass
+
+
+class InvalidConfigurationSchemaError(ExtensionError):
+    """Error thrown when the declared configuration schema of an extension is
+    invalid or unsupported.
     """
 
     pass

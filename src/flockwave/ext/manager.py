@@ -12,33 +12,42 @@ from importlib.metadata import version as get_version_from_metadata
 from inspect import iscoroutinefunction, signature
 from logging import Logger, getLogger
 from types import ModuleType
-from typing import (
-    Any,
-    Generic,
-    TypeVar,
-)
+from typing import Any, Generic, TypeVar
 
 from blinker import Signal
 from semver import Version
 from trio import TASK_STATUS_IGNORED, open_memory_channel, open_nursery
 from trio.abc import SendChannel
 
-from .base import Configuration, ExtensionBase, TApp
+from .base import ExtensionBase, TApp
 from .discovery import ExtensionModuleFinder
 from .errors import (
     ApplicationExit,
     ApplicationRestart,
+    InvalidConfigurationError,
+    InvalidConfigurationSchemaError,
     NoSuchExtension,
     NotLoadableError,
     NotSupportedError,
 )
-from .types import Disposer, EnabledState, Enhancer
+from .types import (
+    Configuration,
+    Disposer,
+    EnabledState,
+    Enhancer,
+    ExtensionConfiguration,
+    ExtensionConfigurationSchema,
+    ExtensionConfigurationSpec,
+    PydanticModel,
+)
 from .utils import (
     AwaitableCancelScope,
     bind,
     cancellable,
+    get_json_schema_from_pydantic_model,
     keydefaultdict,
     nop,
+    normalize_configuration_schema,
     protected,
 )
 
@@ -49,11 +58,10 @@ base_log = getLogger(__name__)
 
 T = TypeVar("T")
 
-#: Type alias for the configuration objects of the extensions
-ExtensionConfiguration = dict[str, Any]
-
-#: Type alias for the configuration schema of an extension
-ExtensionConfigurationSchema = dict[str, Any]
+MANAGER_CONFIGURATION_KEYS = frozenset({"enabled"})
+"""Keys in the raw configuration object that are reserved by the extension
+manager and must not be passed to the extension-specific configuration model.
+"""
 
 
 @dataclass
@@ -653,6 +661,24 @@ class ExtensionManager(Generic[TApp]):
         if module is None:
             return None
 
+        spec_or_schema = self._get_configuration_spec_from_module(
+            module, extension_name
+        )
+        if spec_or_schema is None:
+            return None
+
+        if isinstance(spec_or_schema, dict):
+            # We have a plain JSON schema
+            return normalize_configuration_schema(spec_or_schema)
+        else:
+            # We have a Pydantic model
+            return get_json_schema_from_pydantic_model(
+                spec_or_schema, extension_name=extension_name
+            )
+
+    def _get_configuration_spec_from_module(
+        self, module: ModuleType, extension_name: str
+    ) -> ExtensionConfigurationSpec | None:
         func = getattr(module, "get_schema", None)
         if callable(func):
             try:
@@ -667,20 +693,16 @@ class ExtensionManager(Generic[TApp]):
             schema = getattr(module, "schema", None)
 
         if schema is None:
+            return None
+
+        if isinstance(schema, dict) or (
+            isinstance(schema, type) and isinstance(schema, PydanticModel)
+        ):
             return schema
 
-        if not isinstance(schema, dict):
-            raise RuntimeError("configuration schema must be a dictionary")
-
-        if "type" in schema and schema["type"] != "object":
-            raise RuntimeError("configuration schema must describe a JSON object")
-
-        schema = deepcopy(schema)
-
-        if "type" not in schema:
-            schema["type"] = "object"
-
-        return schema
+        raise InvalidConfigurationSchemaError(
+            "configuration schema must be a dictionary or a Pydantic v2 model class"
+        )
 
     def get_configuration_snapshot(self, extension_name: str) -> ExtensionConfiguration:
         """Returns a snapshot of the configuration of the given extension.
@@ -1382,6 +1404,19 @@ class ExtensionManager(Generic[TApp]):
         if module is None:
             return None
 
+        try:
+            validated_configuration = self._validate_configuration_with_module(
+                extension_name, configuration, module=module
+            )
+        except InvalidConfigurationError as ex:
+            self._on_extension_not_loadable(extension_name, str(ex))
+            return None
+        except InvalidConfigurationSchemaError as ex:
+            self._on_extension_not_loadable(extension_name, str(ex))
+            return None
+        except Exception:
+            return None
+
         # Create the extension instance
         instance_factory = getattr(module, "construct", None)
 
@@ -1401,7 +1436,7 @@ class ExtensionManager(Generic[TApp]):
                 # Maybe the property is used by the extension for something else?
                 log.warning("Cannot set name of extension", extra=extra)
 
-        args = (self.app, configuration, extension_data.log)
+        args = (self.app, validated_configuration, extension_data.log)
 
         # Call the "load" callback
         func = getattr(extension, "load", None)
@@ -1864,12 +1899,43 @@ class ExtensionManager(Generic[TApp]):
         return True
 
     @staticmethod
-    def _get_enabled_state_from_configuration(cfg: Configuration) -> EnabledState:
+    def _get_enabled_state_from_configuration(
+        cfg: ExtensionConfiguration,
+    ) -> EnabledState:
         enabled = cfg.get("enabled", EnabledState.PREFER)
         try:
             return EnabledState.from_object(enabled)
         except ValueError:
             return EnabledState.NO
+
+    def _validate_configuration_with_module(
+        self,
+        extension_name: str,
+        configuration: ExtensionConfiguration,
+        *,
+        module: ModuleType,
+    ) -> Any:
+        schema = self._get_configuration_spec_from_module(module, extension_name)
+        if schema is None or isinstance(schema, dict):
+            return deepcopy(configuration)
+
+        get_json_schema_from_pydantic_model(schema, extension_name=extension_name)
+
+        # We have a Pydantic model, so we need to filter out the keys that are
+        # reserved by the extension manager before passing the configuration to the
+        # model
+        payload = {
+            key: value
+            for key, value in deepcopy(configuration).items()
+            if key not in MANAGER_CONFIGURATION_KEYS
+        }
+
+        try:
+            return schema.model_validate(payload)
+        except Exception as ex:
+            raise InvalidConfigurationError(
+                f"Invalid configuration for extension {extension_name!r}: {ex}"
+            ) from ex
 
 
 class ExtensionAPIProxy:

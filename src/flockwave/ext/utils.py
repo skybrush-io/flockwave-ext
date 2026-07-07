@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
+from copy import deepcopy
 from functools import partial as partial_
 from functools import wraps
 from inspect import Parameter, iscoroutinefunction, signature
@@ -11,6 +12,9 @@ from typing import (
 )
 
 from trio import CancelScope, Event
+
+from .errors import InvalidConfigurationSchemaError
+from .types import ExtensionConfigurationSchema, PydanticModel
 
 __all__ = ("AwaitableCancelScope", "bind", "cancellable", "keydefaultdict", "protected")
 
@@ -150,6 +154,56 @@ def get_name_of_function(func, *, recursion_limit: int = 5) -> str:
         )
     else:
         return "<unknown function>"
+
+
+def get_json_schema_from_pydantic_model(
+    model: PydanticModel, *, extension_name: str
+) -> ExtensionConfigurationSchema:
+    """Generates a normalized JSON schema from a Pydantic model class.
+
+    Args:
+        model: the Pydantic model class to generate the schema from
+        extension_name: the name of the extension that uses this configuration
+            schema, used for error messages
+
+    Raises:
+        InvalidConfigurationSchemaError: if the schema cannot be generated from the
+            Pydantic model
+    """
+    try:
+        schema = model.model_json_schema()
+    except Exception as ex:
+        raise InvalidConfigurationSchemaError(
+            "failed to generate configuration schema for extension "
+            f"{extension_name!r}: {ex}"
+        ) from ex
+
+    return normalize_configuration_schema(schema)
+
+
+def normalize_configuration_schema(schema: Any) -> ExtensionConfigurationSchema:
+    """Normalizes a JSON schema describing an extension configuration.
+
+    The schema must describe a JSON object. The returned schema is deep-copied,
+    so callers may mutate it freely.
+
+    Raises:
+        InvalidConfigurationSchemaError: if the schema is not a dictionary or
+            does not describe a JSON object
+    """
+    if not isinstance(schema, dict):
+        raise InvalidConfigurationSchemaError(
+            "configuration schema must be a dictionary"
+        )
+
+    if "type" in schema and schema["type"] != "object":
+        raise InvalidConfigurationSchemaError(
+            "configuration schema must describe a JSON object"
+        )
+
+    result = deepcopy(schema)
+    result.setdefault("type", "object")
+    return result
 
 
 class keydefaultdict(defaultdict[K, V]):

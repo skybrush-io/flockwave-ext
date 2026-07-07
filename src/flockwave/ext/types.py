@@ -1,18 +1,29 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
     Protocol,
+    TypeAlias,
+    runtime_checkable,
 )
 
 if TYPE_CHECKING:
     from .manager import ExtensionAPIProxy
 
-__all__ = ("Disposer", "EnabledState", "Enhancer")
+__all__ = (
+    "Configuration",
+    "Disposer",
+    "EnabledState",
+    "Enhancer",
+    "ExtensionConfiguration",
+    "ExtensionConfigurationSchema",
+    "ExtensionConfigurationSpec",
+    "PydanticModel",
+)
 
 
 class EnabledState(Enum):
@@ -69,8 +80,37 @@ class EnabledState(Enum):
         return self is EnabledState.YES
 
 
+@runtime_checkable
+class PydanticModel(Protocol):
+    """Protocol describing Pydantic model classes used as configuration
+    schemas by extensions.
+    """
+
+    @classmethod
+    def model_validate(cls, obj: Any) -> Any: ...
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]: ...
+
+
 Disposer = Callable[[], None]
 """Type specification for disposer functions."""
+
+ExtensionConfiguration: TypeAlias = dict[str, Any]
+"""Type alias for the individual configuration objects of the extensions."""
+
+ExtensionConfigurationSchema: TypeAlias = dict[str, Any]
+"""Type alias for the configuration schema of an extension."""
+
+ExtensionConfigurationSpec: TypeAlias = ExtensionConfigurationSchema | PydanticModel
+"""Type alias for values that may be used to describe the configuration of an
+extension.
+"""
+
+Configuration: TypeAlias = Mapping[str, ExtensionConfiguration]
+"""Type alias for objects mapping extension names to their individual configuration
+objects, represented as Python dictionaries.
+"""
 
 
 class Enhancer(Protocol):
