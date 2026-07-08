@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as get_version_from_metadata
 from inspect import iscoroutinefunction, signature
 from logging import Logger, getLogger
@@ -935,7 +936,7 @@ class ExtensionManager(Generic[TApp]):
         else:
             return {str(tag) for tag in tags}
 
-    def get_version_of_extension(self, extension_name: str) -> Version | None:
+    def get_version_of_extension(self, extension_name: str) -> Version | None:  # noqa: C901
         """Returns the version number of the extension with the given name (if
         the extension provides a version number).
 
@@ -988,10 +989,14 @@ class ExtensionManager(Generic[TApp]):
                     extension_name
                 )
                 maybe_version = get_version_from_metadata(module_name)
-            except Exception:
+            except PackageNotFoundError:
+                # This is fine, extension is probably built-in (not installed as a
+                # package) so its version number cannot be determined
+                pass
+            except Exception as ex:
                 base_log.warning(
                     f"Error while getting the version of extension {extension_name!r} "
-                    f"from its module metadata"
+                    f"from its module metadata: {ex}"
                 )
 
         try:
