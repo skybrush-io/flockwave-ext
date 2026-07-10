@@ -1,6 +1,6 @@
 [project]
 name = "flockwave-ext"
-version = "2.1.1"
+version = "2.1.2"
 description = "Generic extension manager for Skybrush-related projects"
 authors = [{ name = "Tamas Nepusz", email = "tamas@collmot.com" }]
 license = "MIT"
