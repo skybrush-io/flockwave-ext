@@ -7,8 +7,12 @@ from inspect import Parameter, iscoroutinefunction, signature
 from logging import Logger
 from typing import (
     Any,
+    Protocol,
+    TypedDict,
     TypeVar,
+    cast,
     overload,
+    runtime_checkable,
 )
 
 from trio import CancelScope, Event
@@ -16,7 +20,17 @@ from trio import CancelScope, Event
 from .errors import InvalidConfigurationSchemaError
 from .types import ExtensionConfigurationSchema, PydanticModel
 
-__all__ = ("AwaitableCancelScope", "bind", "cancellable", "keydefaultdict", "protected")
+__all__ = (
+    "AwaitableCancelScope",
+    "bind",
+    "cancellable",
+    "format_pydantic_validation_error",
+    "get_json_schema_from_pydantic_model",
+    "get_name_of_function",
+    "normalize_configuration_schema",
+    "keydefaultdict",
+    "protected",
+)
 
 
 K = TypeVar("K")
@@ -138,6 +152,54 @@ def cancellable(func):
     decorated._cancellable = True  # type: ignore
 
     return decorated
+
+
+class ErrorDetails(TypedDict):
+    """Typed dictionary describing how Pydantic ErrorDetails dicts look like,
+    without actually depending on Pydantic.
+    """
+
+    ctx: Any
+    input: Any
+    loc: Sequence[str | int]
+    msg: str
+    type: str
+    url: str
+
+
+@runtime_checkable
+class ValidationError(Protocol):
+    """Protocol that specifies how Pydantic validation errors look like, without
+    actually depending on Pydantic.
+    """
+
+    def errors(self) -> list[dict[str, Any]]: ...
+    def error_count(self) -> int: ...
+
+
+def format_pydantic_validation_error(err: Exception) -> str:
+    """Formats a Pydantic validation error into a readable string."""
+    if err.__class__.__name__ != "ValidationError" or not hasattr(err, "errors"):
+        return str(err)
+
+    errors = cast(Any, err).errors()
+    formatted_errors = []
+    for error in errors:
+        loc_parts: list[str] = []
+        last_is_field: bool = False
+        for part in error.get("loc", []):
+            if isinstance(part, int):
+                loc_parts.append(f"[{part}]")
+                last_is_field = False
+            else:
+                loc_parts.append(f".{part}" if last_is_field else part)
+                last_is_field = True
+
+        loc = "".join(loc_parts)
+        msg = error.get("msg", "unknown error")
+        formatted_errors.append(f"  - {loc}: {msg}")
+
+    return "\n" + "\n".join(formatted_errors)
 
 
 def get_name_of_function(func, *, recursion_limit: int = 5) -> str:

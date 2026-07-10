@@ -45,6 +45,7 @@ from .utils import (
     AwaitableCancelScope,
     bind,
     cancellable,
+    format_pydantic_validation_error,
     get_json_schema_from_pydantic_model,
     keydefaultdict,
     nop,
@@ -1938,8 +1939,11 @@ class ExtensionManager(Generic[TApp]):
         try:
             return schema.model_validate(payload)
         except Exception as ex:
+            # This is most likely a Pydantic validation error. Format it nicely.
+            # The formatter also converts any other exception to a string with str(...)
+            ex_as_str = format_pydantic_validation_error(ex)
             raise InvalidConfigurationError(
-                f"Invalid configuration for extension {extension_name!r}: {ex}"
+                f"Invalid configuration for extension {extension_name!r}: {ex_as_str}"
             ) from ex
 
 
