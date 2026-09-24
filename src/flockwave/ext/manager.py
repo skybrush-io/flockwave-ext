@@ -1415,10 +1415,14 @@ class ExtensionManager(Generic[TApp]):
                 extension_name, configuration, module=module
             )
         except InvalidConfigurationError as ex:
-            self._on_extension_not_loadable(extension_name, str(ex))
+            self._on_extension_not_loadable(
+                extension_name, str(ex), even_when_silent=True
+            )
             return None
         except InvalidConfigurationSchemaError as ex:
-            self._on_extension_not_loadable(extension_name, str(ex))
+            self._on_extension_not_loadable(
+                extension_name, str(ex), even_when_silent=True
+            )
             return None
         except Exception:
             return None
@@ -1546,12 +1550,16 @@ class ExtensionManager(Generic[TApp]):
         return result
 
     def _on_extension_not_loadable(
-        self, extension_name: str, message: str | None = None
+        self,
+        extension_name: str,
+        message: str | None = None,
+        *,
+        even_when_silent: bool = False,
     ) -> None:
         """Logs a message that indicates that the extension with the given name
         cannot be loaded.
         """
-        if self._silent_mode_entered > 0:
+        if self._silent_mode_entered > 0 and not even_when_silent:
             return
 
         # Log the exception with a standard message
